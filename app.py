@@ -3,13 +3,14 @@ import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import datetime
+import plotly.express as px  # NEW: Charting Library
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="My Personal Budget", page_icon="💰", layout="wide")
 
 # --- PASSWORD PROTECTION ---
 password = st.sidebar.text_input("Enter Password", type="password")
-if password != "p@ssw0rd": # Change this to your password
+if password != "p@ssw0rd":
     st.info("🔒 Please enter the password to access the budget.")
     st.stop()
 
@@ -19,7 +20,7 @@ def get_google_sheet_driver():
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
-    return client.open("My Personal Budget")
+    return client.open("My Personal Budget") # Make sure this matches your Sheet Name
 
 # --- HELPER FUNCTIONS ---
 def load_data(sheet_object):
@@ -37,15 +38,13 @@ def load_data(sheet_object):
     except:
         df_inc = pd.DataFrame()
 
-    # FORCE COLUMNS & TYPES (The Fix)
-    # Even if empty, we enforce the structure
+    # Force Columns
     if df_exp.empty or 'Date' not in df_exp.columns:
         df_exp = pd.DataFrame(columns=["Date", "Description", "Category", "Amount"])
-    
     if df_inc.empty or 'Date' not in df_inc.columns:
         df_inc = pd.DataFrame(columns=["Date", "Source", "Amount"])
 
-    # CRITICAL FIX: Always convert to datetime, enforcing errors='coerce' to handle empty strings
+    # Convert Dates
     df_exp['Date'] = pd.to_datetime(df_exp['Date'], errors='coerce')
     df_inc['Date'] = pd.to_datetime(df_inc['Date'], errors='coerce')
 
@@ -60,7 +59,7 @@ def delete_row(sheet_object, tab_name, row_index):
     worksheet.delete_rows(row_index + 2)
 
 # --- APP START ---
-st.title("💰 My Personal Budget (Cloud Edition)")
+st.title("💰 My Personal Budget")
 
 try:
     sh = get_google_sheet_driver()
@@ -102,55 +101,98 @@ with tab2:
             st.session_state['success_msg'] = "✅ Expense Saved!"
             st.rerun()
 
-# --- TAB 3: ANALYTICS ---
+# --- TAB 3: ANALYTICS (Charts & Graphs) ---
 with tab3:
-    st.header("Overview")
+    st.header("Spending Analysis")
     
-    # Combined Date Filter
-    # We drop NaT (Not a Time) values to prevent crashes on empty rows
+    # Combined Date Logic
     all_dates = pd.concat([df_income['Date'], df_expenses['Date']]).dropna()
     
     if not all_dates.empty:
-        # Now safe to use .dt accessor because we forced conversion in load_data
-        month_years = all_dates.dt.to_period('M').drop_duplicates().sort_values(ascending=False)
-        selected_period = st.selectbox("Select Month", month_years)
+        # 1. TOGGLE: Monthly vs Annual
+        view_mode = st.radio("Select View Mode:", ["Monthly", "Annual"], horizontal=True)
         
-        # Filter Logic
-        mask_inc = df_income['Date'].dt.to_period('M') == selected_period
-        mask_exp = df_expenses['Date'].dt.to_period('M') == selected_period
+        f_inc = df_income.copy()
+        f_exp = df_expenses.copy()
         
-        f_inc = df_income[mask_inc].copy()
-        f_exp = df_expenses[mask_exp].copy()
-        
-        # Metrics
+        # 2. FILTER DATA based on Toggle
+        if view_mode == "Monthly":
+            # Get list of Month-Years
+            month_years = all_dates.dt.to_period('M').drop_duplicates().sort_values(ascending=False)
+            selected_period = st.selectbox("Select Month", month_years)
+            
+            # Filter
+            mask_inc = f_inc['Date'].dt.to_period('M') == selected_period
+            mask_exp = f_exp['Date'].dt.to_period('M') == selected_period
+            f_inc = f_inc[mask_inc]
+            f_exp = f_exp[mask_exp]
+        else:
+            # Annual: Filter by Year
+            years = all_dates.dt.year.unique()
+            selected_year = st.selectbox("Select Year", sorted(years, reverse=True))
+            
+            mask_inc = f_inc['Date'].dt.year == selected_year
+            mask_exp = f_exp['Date'].dt.year == selected_year
+            f_inc = f_inc[mask_inc]
+            f_exp = f_exp[mask_exp]
+
+        # 3. METRICS (Top Row)
         tot_inc = f_inc['Amount'].sum()
         tot_exp = f_exp['Amount'].sum()
+        balance = tot_inc - tot_exp
         
         c1, c2, c3 = st.columns(3)
-        c1.metric("Income", f"RM {tot_inc:,.2f}")
-        c2.metric("Expenses", f"RM {tot_exp:,.2f}")
-        c3.metric("Balance", f"RM {tot_inc - tot_exp:,.2f}")
+        c1.metric("Total Income", f"RM {tot_inc:,.2f}")
+        c2.metric("Total Expenses", f"RM {tot_exp:,.2f}")
+        c3.metric("Balance", f"RM {balance:,.2f}", delta_color="normal")
         
         st.divider()
+
+        # 4. CHARTS (The new UI/UX part!)
+        if not f_exp.empty:
+            col_chart1, col_chart2 = st.columns(2)
+            
+            with col_chart1:
+                st.subheader("Spending by Category")
+                # Group data for Pie Chart
+                pie_data = f_exp.groupby("Category")["Amount"].sum().reset_index()
+                fig_pie = px.pie(pie_data, values='Amount', names='Category', hole=0.4)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            
+            with col_chart2:
+                st.subheader("Income vs Expenses")
+                # Simple Bar Chart Comparison
+                bar_data = pd.DataFrame({
+                    "Type": ["Income", "Expenses"],
+                    "Amount": [tot_inc, tot_exp]
+                })
+                fig_bar = px.bar(bar_data, x="Type", y="Amount", color="Type", 
+                                 color_discrete_map={"Income": "green", "Expenses": "red"})
+                st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.info("No expenses found for this period, so no charts to show.")
+
+        st.divider()
         
-        # Display Tables
-        col_l, col_r = st.columns(2)
-        with col_l:
-            st.subheader("Expenses")
-            for idx, row in f_exp.iterrows():
-                st.text(f"{row['Date'].date()} | {row['Description']} | RM{row['Amount']}")
-                if st.button("🗑 Delete", key=f"del_e_{idx}"):
-                    delete_row(sh, 'Expenses', idx)
-                    st.session_state['success_msg'] = "❌ Deleted!"
-                    st.rerun()
-                    
-        with col_r:
-            st.subheader("Income")
-            for idx, row in f_inc.iterrows():
-                st.text(f"{row['Date'].date()} | {row['Source']} | RM{row['Amount']}")
-                if st.button("🗑 Delete", key=f"del_i_{idx}"):
-                    delete_row(sh, 'Income', idx)
-                    st.session_state['success_msg'] = "❌ Deleted!"
-                    st.rerun()
+        # 5. DATA TABLES (View & Delete)
+        with st.expander("Show Detailed Transaction Records"):
+            col_l, col_r = st.columns(2)
+            with col_l:
+                st.subheader("Expenses List")
+                for idx, row in f_exp.iterrows():
+                    st.text(f"{row['Date'].date()} | {row['Description']} | RM{row['Amount']}")
+                    if st.button("🗑 Delete", key=f"del_e_{idx}"):
+                        delete_row(sh, 'Expenses', idx)
+                        st.session_state['success_msg'] = "❌ Deleted!"
+                        st.rerun()
+            with col_r:
+                st.subheader("Income List")
+                for idx, row in f_inc.iterrows():
+                    st.text(f"{row['Date'].date()} | {row['Source']} | RM{row['Amount']}")
+                    if st.button("🗑 Delete", key=f"del_i_{idx}"):
+                        delete_row(sh, 'Income', idx)
+                        st.session_state['success_msg'] = "❌ Deleted!"
+                        st.rerun()
+
     else:
-        st.info("No data found. Add your first income or expense to see the dashboard!")
+        st.info("No data found. Add your first income or expense!")
