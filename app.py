@@ -34,15 +34,31 @@ def get_google_sheet_driver():
 # --- HELPER FUNCTIONS ---
 def load_data(sheet_object):
     """Loads data from Google Sheets into Pandas DataFrames."""
-    # Get all values from Expenses tab
-    worksheet_exp = sheet_object.worksheet("Expenses")
-    data_exp = worksheet_exp.get_all_records()
-    df_exp = pd.DataFrame(data_exp)
+    
+    # --- 1. Load Expenses ---
+    try:
+        worksheet_exp = sheet_object.worksheet("Expenses")
+        data_exp = worksheet_exp.get_all_records()
+        df_exp = pd.DataFrame(data_exp)
+    except gspread.exceptions.WorksheetNotFound:
+        # If sheet doesn't exist, return empty DF
+        df_exp = pd.DataFrame()
 
-    # Get all values from Income tab
-    worksheet_inc = sheet_object.worksheet("Income")
-    data_inc = worksheet_inc.get_all_records()
-    df_inc = pd.DataFrame(data_inc)
+    # FORCE COLUMNS if empty (Fixes the KeyError)
+    if df_exp.empty or 'Date' not in df_exp.columns:
+        df_exp = pd.DataFrame(columns=["Date", "Description", "Category", "Amount"])
+
+    # --- 2. Load Income ---
+    try:
+        worksheet_inc = sheet_object.worksheet("Income")
+        data_inc = worksheet_inc.get_all_records()
+        df_inc = pd.DataFrame(data_inc)
+    except gspread.exceptions.WorksheetNotFound:
+        df_inc = pd.DataFrame()
+
+    # FORCE COLUMNS if empty
+    if df_inc.empty or 'Date' not in df_inc.columns:
+        df_inc = pd.DataFrame(columns=["Date", "Source", "Amount"])
     
     return df_exp, df_inc
 
