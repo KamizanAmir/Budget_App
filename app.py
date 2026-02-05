@@ -6,32 +6,81 @@ import datetime
 import plotly.express as px
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="My Personal Budget", page_icon="💰", layout="wide")
+st.set_page_config(page_title="Family Budget Tracker", page_icon="🏠", layout="wide")
 
-# --- CONNECT TO GOOGLE SHEETS ---
-def get_google_sheet_driver():
+# --- CONNECT TO GOOGLE SHEETS (API) ---
+def get_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
-    return client.open("My Personal Budget")
+    return gspread.authorize(creds)
 
-# --- HELPER FUNCTIONS ---
-def get_password(sheet_object):
-    """Fetches the password from the 'Settings' sheet."""
+# --- MULTI-USER LOGIN LOGIC ---
+def check_login(username, password):
+    """Checks the 'Budget_App_Users' sheet for valid credentials."""
+    client = get_client()
     try:
-        ws = sheet_object.worksheet("Settings")
-        # Assuming password is in Cell B2 (Row 2, Col 2)
-        return str(ws.cell(2, 2).value)
-    except:
-        # Fallback if sheet is missing
-        return "1234"
+        # Open the Master User List
+        user_sheet = client.open("Budget_App_Users").sheet1
+        records = user_sheet.get_all_records()
+        df_users = pd.DataFrame(records)
+        
+        # Look for the username
+        user_row = df_users[df_users['Username'] == username]
+        
+        if not user_row.empty:
+            stored_password = str(user_row.iloc[0]['Password'])
+            if password == stored_password:
+                # Return the specific Sheet Name for this user
+                return user_row.iloc[0]['Sheet_Name']
+    except Exception as e:
+        st.error(f"Login System Error: {e}")
+    return None
 
-def update_password(sheet_object, new_password):
-    """Updates the password in the 'Settings' sheet."""
-    ws = sheet_object.worksheet("Settings")
-    ws.update_cell(2, 2, new_password)
+# --- APP START ---
+if 'user_sheet_name' not in st.session_state:
+    st.session_state['user_sheet_name'] = None
 
+# --- LOGIN SCREEN (The Reception Desk) ---
+if st.session_state['user_sheet_name'] is None:
+    st.title("🔐 Family Budget Login")
+    
+    with st.form("login_form"):
+        user_input = st.text_input("Username")
+        pass_input = st.text_input("Password", type="password")
+        submit_login = st.form_submit_button("Login")
+        
+        if submit_login:
+            target_sheet = check_login(user_input, pass_input)
+            if target_sheet:
+                st.session_state['user_sheet_name'] = target_sheet
+                st.success(f"Welcome, {user_input}!")
+                st.rerun()
+            else:
+                st.error("Invalid Username or Password")
+    st.stop() # Stop here if not logged in
+
+# ==========================================
+#  MAIN APP (Runs only after login)
+# ==========================================
+
+# 1. Connect to the SPECIFIC User's Sheet
+try:
+    client = get_client()
+    # Opens the sheet assigned to the logged-in user
+    sh = client.open(st.session_state['user_sheet_name']) 
+except Exception as e:
+    st.error(f"Could not open your budget file ('{st.session_state['user_sheet_name']}'). Did you share it with the bot?")
+    st.stop()
+
+# --- SIDEBAR (Logout) ---
+with st.sidebar:
+    st.write(f"Logged in as: **{st.session_state['user_sheet_name']}**")
+    if st.button("Logout"):
+        st.session_state['user_sheet_name'] = None
+        st.rerun()
+
+# --- HELPER FUNCTIONS (Same as before) ---
 def load_data(sheet_object):
     # Load Expenses
     try:
@@ -67,65 +116,15 @@ def delete_row(sheet_object, tab_name, row_index):
     worksheet = sheet_object.worksheet(tab_name)
     worksheet.delete_rows(row_index + 2)
 
-# --- APP START ---
-st.title("💰 My Personal Budget")
-
-# 1. Connect first to get the real password
-try:
-    sh = get_google_sheet_driver()
-    REAL_PASSWORD = get_password(sh)
-except Exception as e:
-    st.error(f"Connection Error: {e}")
-    st.stop()
-
-# 2. Login Check
-if 'authenticated' not in st.session_state:
-    st.session_state['authenticated'] = False
-
-if not st.session_state['authenticated']:
-    # Show Login Form
-    password_input = st.text_input("Enter Password", type="password")
-    if st.button("Login"):
-        if password_input == REAL_PASSWORD:
-            st.session_state['authenticated'] = True
-            st.rerun()
-        else:
-            st.error("Incorrect Password")
-    st.stop() # Stop here if not logged in
-
-# --- SIDEBAR: SETTINGS ---
-with st.sidebar:
-    st.header("⚙️ Settings")
-    with st.expander("Change Password"):
-        with st.form("pwd_change"):
-            current_pass = st.text_input("Current Password", type="password")
-            new_pass = st.text_input("New Password", type="password")
-            confirm_pass = st.text_input("Confirm New Password", type="password")
-            
-            if st.form_submit_button("Update Password"):
-                if current_pass == REAL_PASSWORD:
-                    if new_pass == confirm_pass and new_pass != "":
-                        update_password(sh, new_pass)
-                        st.success("Password Updated! Please login again.")
-                        st.session_state['authenticated'] = False # Force logout
-                        st.rerun()
-                    else:
-                        st.error("New passwords do not match.")
-                else:
-                    st.error("Current password incorrect.")
-
-    st.divider()
-    if st.button("Logout"):
-        st.session_state['authenticated'] = False
-        st.rerun()
-
-# --- MAIN APP (Only runs if authenticated) ---
+# --- LOAD DATA ---
 df_expenses, df_income = load_data(sh)
 
 # --- SUCCESS MESSAGE ---
 if 'success_msg' in st.session_state:
     st.success(st.session_state['success_msg'])
     del st.session_state['success_msg']
+
+st.title(f"💰 {st.session_state['user_sheet_name']}")
 
 # --- TABS ---
 tab1, tab2, tab3 = st.tabs(["📥 Add Income", "💸 Add Expense", "📊 Analytics"])
@@ -161,7 +160,6 @@ with tab3:
     all_dates = pd.concat([df_income['Date'], df_expenses['Date']]).dropna()
     
     if not all_dates.empty:
-        # TOGGLE: Monthly vs Annual
         view_mode = st.radio("Select View Mode:", ["Monthly", "Annual"], horizontal=True)
         f_inc, f_exp = df_income.copy(), df_expenses.copy()
         
@@ -178,7 +176,6 @@ with tab3:
             mask_exp = f_exp['Date'].dt.year == selected_year
             f_inc, f_exp = f_inc[mask_inc], f_exp[mask_exp]
 
-        # METRICS
         tot_inc = f_inc['Amount'].sum()
         tot_exp = f_exp['Amount'].sum()
         balance = tot_inc - tot_exp
@@ -189,7 +186,6 @@ with tab3:
         c3.metric("Balance", f"RM {balance:,.2f}")
         st.divider()
 
-        # CHARTS
         if not f_exp.empty:
             col_chart1, col_chart2 = st.columns(2)
             with col_chart1:
@@ -206,7 +202,6 @@ with tab3:
             st.info("No expenses found for this period.")
         
         st.divider()
-        # TABLES
         with st.expander("Show Detailed Transaction Records"):
             col_l, col_r = st.columns(2)
             with col_l:
