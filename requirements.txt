@@ -1,12 +1,5 @@
-<<<<<<< HEAD
 pandas
 openpyxl
 gspread
 oauth2client
 plotly
-=======
-pandas
-openpyxl
-gspread
-oauth2client
->>>>>>> c488b4af3c05ec1d0031e24684e76fa7b00f2a5f
