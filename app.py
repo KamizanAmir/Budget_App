@@ -7,6 +7,14 @@ import os
 # --- CONFIGURATION ---
 FILE_NAME = "my_budget_data.xlsx"
 st.set_page_config(page_title="My Personal Budget", page_icon="💰", layout="wide")
+# --- PASSWORD PROTECTION ---
+# Create a password input in the sidebar
+password = st.sidebar.text_input("Enter Password", type="password")
+
+# Replace "1234" with whatever secret code you want
+if password != "p@ssw0rd":
+    st.info("🔒 Please enter the password to access the budget.")
+    st.stop() # This stops the rest of the app from loading
 
 # --- HELPER FUNCTIONS ---
 def load_data():
