@@ -17,7 +17,13 @@ def get_client():
 
 # --- USER MANAGEMENT FUNCTIONS ---
 def check_login(username, password):
-    """Checks credentials against the Master List."""
+    """
+    Checks credentials.
+    Returns:
+    - "PENDING": If password correct but Admin hasn't added Sheet Name yet.
+    - Sheet_Name: If approved and ready.
+    - None: If invalid.
+    """
     client = get_client()
     try:
         user_sheet = client.open("Budget_App_Users").sheet1
@@ -30,18 +36,17 @@ def check_login(username, password):
         if not user_row.empty:
             stored_password = str(user_row.iloc[0]['Password'])
             if str(password) == stored_password:
-                return user_row.iloc[0]['Sheet_Name']
+                sheet_name = str(user_row.iloc[0]['Sheet_Name']).strip()
+                if sheet_name == "":
+                    return "PENDING"
+                return sheet_name
     except Exception as e:
         st.error(f"Login System Error: {e}")
     return None
 
-def register_user(username, password, sheet_name, user_email):
+def register_user_request(username, password):
     """
-    1. Checks if username exists.
-    2. CREATES a new Google Sheet.
-    3. Sets up Expenses/Income tabs.
-    4. SHARES it with the user's email.
-    5. Saves user to database.
+    Simply adds the user to the DB with an EMPTY Sheet_Name.
     """
     client = get_client()
     
@@ -55,43 +60,11 @@ def register_user(username, password, sheet_name, user_email):
     except:
         pass 
 
-    # 2. AUTO-CREATE THE SHEET
+    # 2. Add to Database with EMPTY Sheet Name
     try:
-        # Create the new sheet (The Bot is the Owner)
-        new_sh = client.create(sheet_name)
-        
-        # 3. SHARE IT with the User (So they can see it too)
-        # 'writer' permission means 'Editor' access
-        new_sh.share(user_email, perm_type='user', role='writer')
-        
-        # 4. SETUP TABS & HEADERS
-        # Create Expenses Tab
-        ws_exp = new_sh.add_worksheet(title="Expenses", rows="1000", cols="10")
-        ws_exp.append_row(["Date", "Description", "Category", "Amount"])
-        
-        # Create Income Tab
-        ws_inc = new_sh.add_worksheet(title="Income", rows="1000", cols="10")
-        ws_inc.append_row(["Date", "Source", "Amount"])
-        
-        # Create Settings Tab (For future password changes)
-        ws_set = new_sh.add_worksheet(title="Settings", rows="10", cols="5")
-        ws_set.append_row(["Key", "Value"])
-        ws_set.append_row(["password", password]) # Backup password storage
-
-        # Delete the default 'Sheet1' to keep it clean
-        try:
-            sheet1 = new_sh.worksheet("Sheet1")
-            new_sh.del_worksheet(sheet1)
-        except:
-            pass
-            
-    except Exception as e:
-        return False, f"Error creating sheet: {e}"
-
-    # 5. SAVE TO DATABASE
-    try:
-        master_sheet.append_row([username, password, sheet_name])
-        return True, f"Success! Sheet '{sheet_name}' created and shared with {user_email}."
+        # Columns: Username, Password, Sheet_Name
+        master_sheet.append_row([username, password, ""]) 
+        return True, "Registration successful! Please wait for the Admin to create your budget file and approve you."
     except Exception as e:
         return False, f"Database Error: {e}"
 
@@ -115,7 +88,7 @@ if 'username' not in st.session_state:
 if st.session_state['user_sheet_name'] is None:
     st.title("🔐 Family Budget App")
     
-    tab_login, tab_signup = st.tabs(["Login", "Create Account"])
+    tab_login, tab_signup = st.tabs(["Login", "Request Account"])
     
     # --- TAB 1: LOGIN ---
     with tab_login:
@@ -125,35 +98,36 @@ if st.session_state['user_sheet_name'] is None:
             submit_login = st.form_submit_button("Login")
             
             if submit_login:
-                target_sheet = check_login(user_input, pass_input)
-                if target_sheet:
-                    st.session_state['user_sheet_name'] = target_sheet
+                result = check_login(user_input, pass_input)
+                
+                if result == "PENDING":
+                    st.warning("⏳ Your account is pending Admin approval. Please check back later.")
+                elif result:
+                    # Valid sheet name found, try to connect
+                    st.session_state['user_sheet_name'] = result
                     st.session_state['username'] = user_input
                     st.success(f"Welcome back, {user_input}!")
                     st.rerun()
                 else:
                     st.error("Invalid Username or Password")
 
-    # --- TAB 2: CREATE ACCOUNT (Auto-Setup) ---
+    # --- TAB 2: REQUEST ACCOUNT ---
     with tab_signup:
-        st.info("ℹ️ We will automatically create a Google Sheet for you and share it with your Gmail.")
+        st.info("ℹ️ Fill in your details. You will be able to login once the Admin creates your budget sheet.")
         
         with st.form("signup_form"):
             new_user = st.text_input("Choose Username")
             new_pass = st.text_input("Choose Password", type="password")
-            new_email = st.text_input("Your Gmail Address (To access your file)")
-            sheet_name_input = st.text_input("Name for your new Sheet (e.g. Kamizan Budget)")
             
-            submit_signup = st.form_submit_button("Create Account & Sheet")
+            submit_signup = st.form_submit_button("Request Account")
             
             if submit_signup:
-                if new_user and new_pass and sheet_name_input and new_email:
-                    with st.spinner("🤖 Bot is creating your sheet... This takes about 10 seconds."):
-                        success, message = register_user(new_user, new_pass, sheet_name_input, new_email)
-                        if success:
-                            st.success(message)
-                        else:
-                            st.error(message)
+                if new_user and new_pass:
+                    success, message = register_user_request(new_user, new_pass)
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
                 else:
                     st.warning("Please fill in all fields.")
     
@@ -165,8 +139,12 @@ if st.session_state['user_sheet_name'] is None:
 try:
     client = get_client()
     sh = client.open(st.session_state['user_sheet_name']) 
+except gspread.exceptions.SpreadsheetNotFound:
+    st.error(f"🚨 Approval Error: The Admin approved you for sheet '{st.session_state['user_sheet_name']}', but the Bot cannot find it.")
+    st.info("Ask the Admin: 'Did you share the sheet with the Bot Email?'")
+    st.stop()
 except Exception as e:
-    st.error(f"Error accessing budget file. ({e})")
+    st.error(f"Connection Error: {e}")
     st.stop()
 
 # --- SIDEBAR ---
@@ -201,6 +179,7 @@ with st.sidebar:
 
 # --- HELPER FUNCTIONS ---
 def load_data(sheet_object):
+    # Try/Except blocks allow opening a brand new blank sheet without crashing
     try:
         data_exp = sheet_object.worksheet("Expenses").get_all_records()
         df_exp = pd.DataFrame(data_exp)
@@ -223,7 +202,17 @@ def load_data(sheet_object):
     return df_exp, df_inc
 
 def save_row(sheet_object, tab_name, data):
-    worksheet = sheet_object.worksheet(tab_name)
+    # Ensure tab exists before writing
+    try:
+        worksheet = sheet_object.worksheet(tab_name)
+    except:
+        # Auto-create tab if Admin forgot
+        worksheet = sheet_object.add_worksheet(title=tab_name, rows="1000", cols="10")
+        if tab_name == "Expenses":
+            worksheet.append_row(["Date", "Description", "Category", "Amount"])
+        else:
+            worksheet.append_row(["Date", "Source", "Amount"])
+            
     worksheet.append_row(data)
 
 def delete_row(sheet_object, tab_name, row_index):
