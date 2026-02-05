@@ -67,18 +67,14 @@ if 'username' not in st.session_state:
     st.session_state['username'] = None
 
 # ==========================================
-#  LOGIC SPLIT: LOGIN vs MAIN APP
+#  SCENE 1: LOGIN / REQUEST
 # ==========================================
 
 if st.session_state['user_sheet_name'] is None:
-    # ---------------------------
-    # SCENE 1: LOGIN / REQUEST
-    # ---------------------------
     st.title("🔐 Budget Tracker")
     
     tab_login, tab_signup = st.tabs(["Login", "Request Account"])
     
-    # --- TAB 1: LOGIN ---
     with tab_login:
         with st.form("login_form"):
             user_input = st.text_input("Username")
@@ -91,14 +87,12 @@ if st.session_state['user_sheet_name'] is None:
                 if sheet_name:
                     st.session_state['user_sheet_name'] = sheet_name
                     st.session_state['username'] = user_input
-                    st.rerun() # Force reload to switch to SCENE 2 immediately
+                    st.rerun()
                 else:
                     st.error("Invalid Username or Password")
 
-    # --- TAB 2: REQUEST ACCOUNT ---
     with tab_signup:
         st.info("ℹ️ Enter the name of the sheet you want the Admin to create for you.")
-        
         with st.form("signup_form"):
             new_user = st.text_input("Choose Username")
             new_pass = st.text_input("Choose Password", type="password")
@@ -117,19 +111,15 @@ if st.session_state['user_sheet_name'] is None:
                     st.warning("Please fill in all fields.")
 
 else:
-    # ---------------------------
-    # SCENE 2: MAIN APP (Only runs if logged in)
-    # ---------------------------
+    # ==========================================
+    #  SCENE 2: MAIN APP
+    # ==========================================
     try:
         client = get_client()
         sh = client.open(st.session_state['user_sheet_name']) 
     except gspread.exceptions.SpreadsheetNotFound:
         st.warning(f"⏳ **Account Pending Activation**")
-        st.info(f"""
-        You have successfully registered, but the Admin has not created your sheet **'{st.session_state['user_sheet_name']}'** yet.
-        
-        **Please contact the Admin (kamizan980505@gmail.com) and ask them to create this sheet.**
-        """)
+        st.info(f"The Admin has not created your sheet **'{st.session_state['user_sheet_name']}'** yet.")
         if st.button("Back to Login"):
             st.session_state['user_sheet_name'] = None
             st.rerun()
@@ -250,19 +240,27 @@ else:
             view_mode = st.radio("Select View Mode:", ["Monthly", "Annual"], horizontal=True)
             f_inc, f_exp = df_income.copy(), df_expenses.copy()
             
+            # --- FILTER LOGIC ---
             if view_mode == "Monthly":
                 month_years = all_dates.dt.to_period('M').drop_duplicates().sort_values(ascending=False)
                 selected_period = st.selectbox("Select Month", month_years)
+                
                 mask_inc = f_inc['Date'].dt.to_period('M') == selected_period
                 mask_exp = f_exp['Date'].dt.to_period('M') == selected_period
                 f_inc, f_exp = f_inc[mask_inc], f_exp[mask_exp]
             else:
                 years = all_dates.dt.year.unique()
                 selected_year = st.selectbox("Select Year", sorted(years, reverse=True))
+                
                 mask_inc = f_inc['Date'].dt.year == selected_year
                 mask_exp = f_exp['Date'].dt.year == selected_year
                 f_inc, f_exp = f_inc[mask_inc], f_exp[mask_exp]
+            
+            # Sort by Date (Newest First)
+            f_inc = f_inc.sort_values(by="Date", ascending=False)
+            f_exp = f_exp.sort_values(by="Date", ascending=False)
 
+            # --- TOP METRICS ---
             tot_inc = f_inc['Amount'].sum()
             tot_exp = f_exp['Amount'].sum()
             balance = tot_inc - tot_exp
@@ -273,6 +271,7 @@ else:
             c3.metric("Balance", f"RM {balance:,.2f}")
             st.divider()
 
+            # --- CHARTS ---
             if not f_exp.empty:
                 col_chart1, col_chart2 = st.columns(2)
                 with col_chart1:
@@ -289,21 +288,60 @@ else:
                 st.info("No expenses found for this period.")
             
             st.divider()
-            with st.expander("Show Detailed Transaction Records"):
-                col_l, col_r = st.columns(2)
-                with col_l:
+
+            # --- DETAILED RECORDS (Neat Grid + Download) ---
+            with st.expander("Show Detailed Transaction Records", expanded=True):
+                
+                # 1. DOWNLOAD BUTTONS
+                d_col1, d_col2 = st.columns(2)
+                with d_col1:
+                    csv_exp = f_exp.to_csv(index=False).encode('utf-8')
+                    st.download_button("📥 Download Expenses (CSV)", data=csv_exp, file_name=f"expenses_{view_mode}.csv", mime="text/csv")
+                with d_col2:
+                    csv_inc = f_inc.to_csv(index=False).encode('utf-8')
+                    st.download_button("📥 Download Income (CSV)", data=csv_inc, file_name=f"income_{view_mode}.csv", mime="text/csv")
+
+                st.markdown("---")
+
+                # 2. NEAT TRANSACTION GRID
+                list_col_l, list_col_r = st.columns(2)
+
+                # EXPENSES LIST
+                with list_col_l:
                     st.subheader("Expenses List")
+                    # Header Row
+                    h1, h2, h3, h4 = st.columns([2, 3, 2, 1])
+                    h1.markdown("**Date**")
+                    h2.markdown("**Description**")
+                    h3.markdown("**Amount**")
+                    h4.markdown("**Del**")
+                    
                     for idx, row in f_exp.iterrows():
-                        st.text(f"{row['Date'].date()} | {row['Description']} | RM{row['Amount']}")
-                        if st.button("🗑 Delete", key=f"del_e_{idx}"):
+                        r1, r2, r3, r4 = st.columns([2, 3, 2, 1])
+                        r1.write(row['Date'].strftime('%Y-%m-%d'))
+                        r2.write(f"{row['Category']} - {row['Description']}")
+                        r3.write(f"RM{row['Amount']}")
+                        if r4.button("🗑", key=f"del_e_{idx}"):
                             delete_row(sh, 'Expenses', idx)
                             st.session_state['success_msg'] = "❌ Deleted!"
                             st.rerun()
-                with col_r:
+
+                # INCOME LIST
+                with list_col_r:
                     st.subheader("Income List")
+                    # Header Row
+                    h1, h2, h3, h4 = st.columns([2, 3, 2, 1])
+                    h1.markdown("**Date**")
+                    h2.markdown("**Source**")
+                    h3.markdown("**Amount**")
+                    h4.markdown("**Del**")
+                    
                     for idx, row in f_inc.iterrows():
-                        st.text(f"{row['Date'].date()} | {row['Source']} | RM{row['Amount']}")
-                        if st.button("🗑 Delete", key=f"del_i_{idx}"):
+                        r1, r2, r3, r4 = st.columns([2, 3, 2, 1])
+                        r1.write(row['Date'].strftime('%Y-%m-%d'))
+                        r2.write(row['Source'])
+                        r3.write(f"RM{row['Amount']}")
+                        if r4.button("🗑", key=f"del_i_{idx}"):
                             delete_row(sh, 'Income', idx)
                             st.session_state['success_msg'] = "❌ Deleted!"
                             st.rerun()
