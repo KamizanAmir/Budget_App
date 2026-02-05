@@ -6,7 +6,7 @@ import datetime
 import plotly.express as px
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Budget Tracker", page_icon="🏠", layout="wide")
+st.set_page_config(page_title="Family Budget Tracker", page_icon="🏠", layout="wide")
 
 # --- CONNECT TO GOOGLE SHEETS (API) ---
 def get_client():
@@ -17,7 +17,7 @@ def get_client():
 
 # --- USER MANAGEMENT FUNCTIONS ---
 def check_login(username, password):
-    """Checks the 'Budget_App_Users' sheet for valid credentials."""
+    """Checks credentials against the Master List."""
     client = get_client()
     try:
         user_sheet = client.open("Budget_App_Users").sheet1
@@ -35,62 +35,143 @@ def check_login(username, password):
         st.error(f"Login System Error: {e}")
     return None
 
+def register_user(username, password, sheet_name, user_email):
+    """
+    1. Checks if username exists.
+    2. CREATES a new Google Sheet.
+    3. Sets up Expenses/Income tabs.
+    4. SHARES it with the user's email.
+    5. Saves user to database.
+    """
+    client = get_client()
+    
+    # 1. Check if Username Exists
+    try:
+        master_sheet = client.open("Budget_App_Users").sheet1
+        records = master_sheet.get_all_records()
+        df_users = pd.DataFrame(records)
+        if not df_users.empty and str(username) in df_users['Username'].astype(str).values:
+            return False, "Username already taken."
+    except:
+        pass 
+
+    # 2. AUTO-CREATE THE SHEET
+    try:
+        # Create the new sheet (The Bot is the Owner)
+        new_sh = client.create(sheet_name)
+        
+        # 3. SHARE IT with the User (So they can see it too)
+        # 'writer' permission means 'Editor' access
+        new_sh.share(user_email, perm_type='user', role='writer')
+        
+        # 4. SETUP TABS & HEADERS
+        # Create Expenses Tab
+        ws_exp = new_sh.add_worksheet(title="Expenses", rows="1000", cols="10")
+        ws_exp.append_row(["Date", "Description", "Category", "Amount"])
+        
+        # Create Income Tab
+        ws_inc = new_sh.add_worksheet(title="Income", rows="1000", cols="10")
+        ws_inc.append_row(["Date", "Source", "Amount"])
+        
+        # Create Settings Tab (For future password changes)
+        ws_set = new_sh.add_worksheet(title="Settings", rows="10", cols="5")
+        ws_set.append_row(["Key", "Value"])
+        ws_set.append_row(["password", password]) # Backup password storage
+
+        # Delete the default 'Sheet1' to keep it clean
+        try:
+            sheet1 = new_sh.worksheet("Sheet1")
+            new_sh.del_worksheet(sheet1)
+        except:
+            pass
+            
+    except Exception as e:
+        return False, f"Error creating sheet: {e}"
+
+    # 5. SAVE TO DATABASE
+    try:
+        master_sheet.append_row([username, password, sheet_name])
+        return True, f"Success! Sheet '{sheet_name}' created and shared with {user_email}."
+    except Exception as e:
+        return False, f"Database Error: {e}"
+
 def change_user_password(username, new_password):
-    """Updates the password for the specific user in 'Budget_App_Users'."""
     client = get_client()
     user_sheet = client.open("Budget_App_Users").sheet1
-    
-    # Find the cell with the username
     try:
         cell = user_sheet.find(username)
-        # Update the cell to the RIGHT of the username (assuming Password is Col 2)
-        # Row is cell.row, Column is 2 (Password column)
         user_sheet.update_cell(cell.row, 2, new_password)
         return True
     except:
         return False
 
-# --- SESSION STATE INITIALIZATION ---
+# --- SESSION STATE ---
 if 'user_sheet_name' not in st.session_state:
     st.session_state['user_sheet_name'] = None
 if 'username' not in st.session_state:
     st.session_state['username'] = None
 
-# --- LOGIN SCREEN ---
+# --- LOGIN / SIGN UP SCREEN ---
 if st.session_state['user_sheet_name'] is None:
-    st.title("🔐 Monitoring Budget Login")
+    st.title("🔐 Family Budget App")
     
-    with st.form("login_form"):
-        user_input = st.text_input("Username")
-        pass_input = st.text_input("Password", type="password")
-        submit_login = st.form_submit_button("Login")
+    tab_login, tab_signup = st.tabs(["Login", "Create Account"])
+    
+    # --- TAB 1: LOGIN ---
+    with tab_login:
+        with st.form("login_form"):
+            user_input = st.text_input("Username")
+            pass_input = st.text_input("Password", type="password")
+            submit_login = st.form_submit_button("Login")
+            
+            if submit_login:
+                target_sheet = check_login(user_input, pass_input)
+                if target_sheet:
+                    st.session_state['user_sheet_name'] = target_sheet
+                    st.session_state['username'] = user_input
+                    st.success(f"Welcome back, {user_input}!")
+                    st.rerun()
+                else:
+                    st.error("Invalid Username or Password")
+
+    # --- TAB 2: CREATE ACCOUNT (Auto-Setup) ---
+    with tab_signup:
+        st.info("ℹ️ We will automatically create a Google Sheet for you and share it with your Gmail.")
         
-        if submit_login:
-            target_sheet = check_login(user_input, pass_input)
-            if target_sheet:
-                st.session_state['user_sheet_name'] = target_sheet
-                st.session_state['username'] = user_input
-                st.success(f"Welcome, {user_input}!")
-                st.rerun()
-            else:
-                st.error("Invalid Username or Password")
+        with st.form("signup_form"):
+            new_user = st.text_input("Choose Username")
+            new_pass = st.text_input("Choose Password", type="password")
+            new_email = st.text_input("Your Gmail Address (To access your file)")
+            sheet_name_input = st.text_input("Name for your new Sheet (e.g. Kamizan Budget)")
+            
+            submit_signup = st.form_submit_button("Create Account & Sheet")
+            
+            if submit_signup:
+                if new_user and new_pass and sheet_name_input and new_email:
+                    with st.spinner("🤖 Bot is creating your sheet... This takes about 10 seconds."):
+                        success, message = register_user(new_user, new_pass, sheet_name_input, new_email)
+                        if success:
+                            st.success(message)
+                        else:
+                            st.error(message)
+                else:
+                    st.warning("Please fill in all fields.")
+    
     st.stop() 
 
 # ==========================================
 #  MAIN APP (Runs only after login)
 # ==========================================
-
-# 1. Connect to the SPECIFIC User's Sheet
 try:
     client = get_client()
     sh = client.open(st.session_state['user_sheet_name']) 
 except Exception as e:
-    st.error(f"Could not open your budget file ('{st.session_state['user_sheet_name']}'). Did you share it with the bot?")
+    st.error(f"Error accessing budget file. ({e})")
     st.stop()
 
-# --- SIDEBAR: SETTINGS & LOGOUT ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.write(f"Logged in as: **{st.session_state['username']}**")
+    st.write(f"User: **{st.session_state['username']}**")
     
     with st.expander("⚙️ Change Password"):
         with st.form("pwd_change_form"):
@@ -99,20 +180,17 @@ with st.sidebar:
             conf_pass = st.text_input("Confirm Password", type="password")
             
             if st.form_submit_button("Update"):
-                # verify current password again for security
                 real_sheet_check = check_login(st.session_state['username'], curr_pass)
-                
-                if real_sheet_check: # Logic: If login works, password is correct
+                if real_sheet_check:
                     if new_pass == conf_pass and new_pass != "":
-                        success = change_user_password(st.session_state['username'], new_pass)
-                        if success:
-                            st.success("Password Updated! Please login again.")
-                            st.session_state['user_sheet_name'] = None # Logout
+                        if change_user_password(st.session_state['username'], new_pass):
+                            st.success("Updated! Logging out...")
+                            st.session_state['user_sheet_name'] = None
                             st.rerun()
                         else:
-                            st.error("Error updating database.")
+                            st.error("Database Error.")
                     else:
-                        st.error("New passwords do not match.")
+                        st.error("Passwords do not match.")
                 else:
                     st.error("Current password incorrect.")
     
@@ -121,7 +199,7 @@ with st.sidebar:
         st.session_state['user_sheet_name'] = None
         st.rerun()
 
-# --- HELPER FUNCTIONS (Same as before) ---
+# --- HELPER FUNCTIONS ---
 def load_data(sheet_object):
     try:
         data_exp = sheet_object.worksheet("Expenses").get_all_records()
