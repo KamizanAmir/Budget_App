@@ -15,33 +15,48 @@ def get_client():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
-# --- MULTI-USER LOGIN LOGIC ---
+# --- USER MANAGEMENT FUNCTIONS ---
 def check_login(username, password):
     """Checks the 'Budget_App_Users' sheet for valid credentials."""
     client = get_client()
     try:
-        # Open the Master User List
         user_sheet = client.open("Budget_App_Users").sheet1
         records = user_sheet.get_all_records()
         df_users = pd.DataFrame(records)
         
         # Look for the username
-        user_row = df_users[df_users['Username'] == username]
+        user_row = df_users[df_users['Username'].astype(str) == str(username)]
         
         if not user_row.empty:
             stored_password = str(user_row.iloc[0]['Password'])
-            if password == stored_password:
-                # Return the specific Sheet Name for this user
+            if str(password) == stored_password:
                 return user_row.iloc[0]['Sheet_Name']
     except Exception as e:
         st.error(f"Login System Error: {e}")
     return None
 
-# --- APP START ---
+def change_user_password(username, new_password):
+    """Updates the password for the specific user in 'Budget_App_Users'."""
+    client = get_client()
+    user_sheet = client.open("Budget_App_Users").sheet1
+    
+    # Find the cell with the username
+    try:
+        cell = user_sheet.find(username)
+        # Update the cell to the RIGHT of the username (assuming Password is Col 2)
+        # Row is cell.row, Column is 2 (Password column)
+        user_sheet.update_cell(cell.row, 2, new_password)
+        return True
+    except:
+        return False
+
+# --- SESSION STATE INITIALIZATION ---
 if 'user_sheet_name' not in st.session_state:
     st.session_state['user_sheet_name'] = None
+if 'username' not in st.session_state:
+    st.session_state['username'] = None
 
-# --- LOGIN SCREEN (The Reception Desk) ---
+# --- LOGIN SCREEN ---
 if st.session_state['user_sheet_name'] is None:
     st.title("🔐 Family Budget Login")
     
@@ -54,11 +69,12 @@ if st.session_state['user_sheet_name'] is None:
             target_sheet = check_login(user_input, pass_input)
             if target_sheet:
                 st.session_state['user_sheet_name'] = target_sheet
+                st.session_state['username'] = user_input
                 st.success(f"Welcome, {user_input}!")
                 st.rerun()
             else:
                 st.error("Invalid Username or Password")
-    st.stop() # Stop here if not logged in
+    st.stop() 
 
 # ==========================================
 #  MAIN APP (Runs only after login)
@@ -67,42 +83,62 @@ if st.session_state['user_sheet_name'] is None:
 # 1. Connect to the SPECIFIC User's Sheet
 try:
     client = get_client()
-    # Opens the sheet assigned to the logged-in user
     sh = client.open(st.session_state['user_sheet_name']) 
 except Exception as e:
     st.error(f"Could not open your budget file ('{st.session_state['user_sheet_name']}'). Did you share it with the bot?")
     st.stop()
 
-# --- SIDEBAR (Logout) ---
+# --- SIDEBAR: SETTINGS & LOGOUT ---
 with st.sidebar:
-    st.write(f"Logged in as: **{st.session_state['user_sheet_name']}**")
+    st.write(f"Logged in as: **{st.session_state['username']}**")
+    
+    with st.expander("⚙️ Change Password"):
+        with st.form("pwd_change_form"):
+            curr_pass = st.text_input("Current Password", type="password")
+            new_pass = st.text_input("New Password", type="password")
+            conf_pass = st.text_input("Confirm Password", type="password")
+            
+            if st.form_submit_button("Update"):
+                # verify current password again for security
+                real_sheet_check = check_login(st.session_state['username'], curr_pass)
+                
+                if real_sheet_check: # Logic: If login works, password is correct
+                    if new_pass == conf_pass and new_pass != "":
+                        success = change_user_password(st.session_state['username'], new_pass)
+                        if success:
+                            st.success("Password Updated! Please login again.")
+                            st.session_state['user_sheet_name'] = None # Logout
+                            st.rerun()
+                        else:
+                            st.error("Error updating database.")
+                    else:
+                        st.error("New passwords do not match.")
+                else:
+                    st.error("Current password incorrect.")
+    
+    st.divider()
     if st.button("Logout"):
         st.session_state['user_sheet_name'] = None
         st.rerun()
 
 # --- HELPER FUNCTIONS (Same as before) ---
 def load_data(sheet_object):
-    # Load Expenses
     try:
         data_exp = sheet_object.worksheet("Expenses").get_all_records()
         df_exp = pd.DataFrame(data_exp)
     except:
         df_exp = pd.DataFrame()
-
-    # Load Income
     try:
         data_inc = sheet_object.worksheet("Income").get_all_records()
         df_inc = pd.DataFrame(data_inc)
     except:
         df_inc = pd.DataFrame()
 
-    # Force Columns
     if df_exp.empty or 'Date' not in df_exp.columns:
         df_exp = pd.DataFrame(columns=["Date", "Description", "Category", "Amount"])
     if df_inc.empty or 'Date' not in df_inc.columns:
         df_inc = pd.DataFrame(columns=["Date", "Source", "Amount"])
 
-    # Convert Dates
     df_exp['Date'] = pd.to_datetime(df_exp['Date'], errors='coerce')
     df_inc['Date'] = pd.to_datetime(df_inc['Date'], errors='coerce')
 
@@ -119,17 +155,15 @@ def delete_row(sheet_object, tab_name, row_index):
 # --- LOAD DATA ---
 df_expenses, df_income = load_data(sh)
 
-# --- SUCCESS MESSAGE ---
 if 'success_msg' in st.session_state:
     st.success(st.session_state['success_msg'])
     del st.session_state['success_msg']
 
-st.title(f"💰 {st.session_state['user_sheet_name']}")
+st.title(f"💰 {st.session_state['username'].capitalize()}'s Budget")
 
 # --- TABS ---
 tab1, tab2, tab3 = st.tabs(["📥 Add Income", "💸 Add Expense", "📊 Analytics"])
 
-# --- TAB 1: INCOME ---
 with tab1:
     st.header("New Income")
     with st.form("income_form", clear_on_submit=True):
@@ -141,7 +175,6 @@ with tab1:
             st.session_state['success_msg'] = "✅ Income Saved!"
             st.rerun()
 
-# --- TAB 2: EXPENSE ---
 with tab2:
     st.header("New Expense")
     with st.form("expense_form", clear_on_submit=True):
@@ -154,7 +187,6 @@ with tab2:
             st.session_state['success_msg'] = "✅ Expense Saved!"
             st.rerun()
 
-# --- TAB 3: ANALYTICS ---
 with tab3:
     st.header("Spending Analysis")
     all_dates = pd.concat([df_income['Date'], df_expenses['Date']]).dropna()
