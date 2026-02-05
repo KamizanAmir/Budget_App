@@ -4,6 +4,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import datetime
 import plotly.express as px
+import io  # NEW: Required for handling the Excel file in memory
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Budget Tracker", page_icon="💰", layout="wide")
@@ -256,11 +257,11 @@ else:
                 mask_exp = f_exp['Date'].dt.year == selected_year
                 f_inc, f_exp = f_inc[mask_inc], f_exp[mask_exp]
             
-            # Sort by Date (Newest First)
+            # Sort by Date
             f_inc = f_inc.sort_values(by="Date", ascending=False)
             f_exp = f_exp.sort_values(by="Date", ascending=False)
 
-            # --- TOP METRICS ---
+            # --- METRICS ---
             tot_inc = f_inc['Amount'].sum()
             tot_exp = f_exp['Amount'].sum()
             balance = tot_inc - tot_exp
@@ -289,27 +290,30 @@ else:
             
             st.divider()
 
-            # --- DETAILED RECORDS (Neat Grid + Download) ---
+            # --- DETAILED RECORDS ---
             with st.expander("Show Detailed Transaction Records", expanded=True):
                 
-                # 1. DOWNLOAD BUTTONS
-                d_col1, d_col2 = st.columns(2)
-                with d_col1:
-                    csv_exp = f_exp.to_csv(index=False).encode('utf-8')
-                    st.download_button("📥 Download Expenses (CSV)", data=csv_exp, file_name=f"expenses_{view_mode}.csv", mime="text/csv")
-                with d_col2:
-                    csv_inc = f_inc.to_csv(index=False).encode('utf-8')
-                    st.download_button("📥 Download Income (CSV)", data=csv_inc, file_name=f"income_{view_mode}.csv", mime="text/csv")
+                # --- NEW: EXCEL EXPORT BUTTON ---
+                # We use io.BytesIO to create the Excel file in memory
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    f_exp.to_excel(writer, sheet_name='Expenses', index=False)
+                    f_inc.to_excel(writer, sheet_name='Income', index=False)
+                    
+                st.download_button(
+                    label="📥 Download Report (Excel)",
+                    data=buffer.getvalue(),
+                    file_name=f"Budget_Report_{view_mode}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
                 st.markdown("---")
 
-                # 2. NEAT TRANSACTION GRID
                 list_col_l, list_col_r = st.columns(2)
 
                 # EXPENSES LIST
                 with list_col_l:
                     st.subheader("Expenses List")
-                    # Header Row
                     h1, h2, h3, h4 = st.columns([2, 3, 2, 1])
                     h1.markdown("**Date**")
                     h2.markdown("**Description**")
@@ -329,7 +333,6 @@ else:
                 # INCOME LIST
                 with list_col_r:
                     st.subheader("Income List")
-                    # Header Row
                     h1, h2, h3, h4 = st.columns([2, 3, 2, 1])
                     h1.markdown("**Date**")
                     h2.markdown("**Source**")
