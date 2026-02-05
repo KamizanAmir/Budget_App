@@ -6,7 +6,7 @@ import datetime
 import plotly.express as px
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Family Budget Tracker", page_icon="🏠", layout="wide")
+st.set_page_config(page_title="Budget Tracker", page_icon="🏠", layout="wide")
 
 # --- CONNECT TO GOOGLE SHEETS (API) ---
 def get_client():
@@ -17,36 +17,25 @@ def get_client():
 
 # --- USER MANAGEMENT FUNCTIONS ---
 def check_login(username, password):
-    """
-    Checks credentials.
-    Returns:
-    - "PENDING": If password correct but Admin hasn't added Sheet Name yet.
-    - Sheet_Name: If approved and ready.
-    - None: If invalid.
-    """
     client = get_client()
     try:
         user_sheet = client.open("Budget_App_Users").sheet1
         records = user_sheet.get_all_records()
         df_users = pd.DataFrame(records)
         
-        # Look for the username
         user_row = df_users[df_users['Username'].astype(str) == str(username)]
         
         if not user_row.empty:
             stored_password = str(user_row.iloc[0]['Password'])
             if str(password) == stored_password:
-                sheet_name = str(user_row.iloc[0]['Sheet_Name']).strip()
-                if sheet_name == "":
-                    return "PENDING"
-                return sheet_name
+                return str(user_row.iloc[0]['Sheet_Name'])
     except Exception as e:
         st.error(f"Login System Error: {e}")
     return None
 
-def register_user_request(username, password):
+def register_user_request(username, password, preferred_sheet_name):
     """
-    Simply adds the user to the DB with an EMPTY Sheet_Name.
+    Adds user to DB with their PREFERRED Sheet Name immediately.
     """
     client = get_client()
     
@@ -60,11 +49,11 @@ def register_user_request(username, password):
     except:
         pass 
 
-    # 2. Add to Database with EMPTY Sheet Name
+    # 2. Add to Database
     try:
         # Columns: Username, Password, Sheet_Name
-        master_sheet.append_row([username, password, ""]) 
-        return True, "Registration successful! Please wait for the Admin to create your budget file and approve you."
+        master_sheet.append_row([username, password, preferred_sheet_name]) 
+        return True, f"Request sent! Please wait for the Admin to create the sheet '{preferred_sheet_name}'."
     except Exception as e:
         return False, f"Database Error: {e}"
 
@@ -86,7 +75,7 @@ if 'username' not in st.session_state:
 
 # --- LOGIN / SIGN UP SCREEN ---
 if st.session_state['user_sheet_name'] is None:
-    st.title("🔐 Family Budget App")
+    st.title("🔐 Budget App")
     
     tab_login, tab_signup = st.tabs(["Login", "Request Account"])
     
@@ -98,32 +87,29 @@ if st.session_state['user_sheet_name'] is None:
             submit_login = st.form_submit_button("Login")
             
             if submit_login:
-                result = check_login(user_input, pass_input)
+                sheet_name = check_login(user_input, pass_input)
                 
-                if result == "PENDING":
-                    st.warning("⏳ Your account is pending Admin approval. Please check back later.")
-                elif result:
-                    # Valid sheet name found, try to connect
-                    st.session_state['user_sheet_name'] = result
+                if sheet_name:
+                    st.session_state['user_sheet_name'] = sheet_name
                     st.session_state['username'] = user_input
-                    st.success(f"Welcome back, {user_input}!")
-                    st.rerun()
+                    # We don't rerun yet, we let the Main App block check if the sheet exists
                 else:
                     st.error("Invalid Username or Password")
 
     # --- TAB 2: REQUEST ACCOUNT ---
     with tab_signup:
-        st.info("ℹ️ Fill in your details. You will be able to login once the Admin creates your budget sheet.")
+        st.info("ℹ️ Enter the name of the sheet you want the Admin to create for you.")
         
         with st.form("signup_form"):
             new_user = st.text_input("Choose Username")
             new_pass = st.text_input("Choose Password", type="password")
+            pref_sheet = st.text_input("Preferred Sheet Name (e.g. My Budget 2026)")
             
-            submit_signup = st.form_submit_button("Request Account")
+            submit_signup = st.form_submit_button("Submit Request")
             
             if submit_signup:
-                if new_user and new_pass:
-                    success, message = register_user_request(new_user, new_pass)
+                if new_user and new_pass and pref_sheet:
+                    success, message = register_user_request(new_user, new_pass, pref_sheet)
                     if success:
                         st.success(message)
                     else:
@@ -131,17 +117,27 @@ if st.session_state['user_sheet_name'] is None:
                 else:
                     st.warning("Please fill in all fields.")
     
-    st.stop() 
+    # If not logged in, stop here
+    if st.session_state['user_sheet_name'] is None:
+        st.stop()
 
 # ==========================================
-#  MAIN APP (Runs only after login)
+#  MAIN APP (Runs only after login success)
 # ==========================================
 try:
     client = get_client()
     sh = client.open(st.session_state['user_sheet_name']) 
 except gspread.exceptions.SpreadsheetNotFound:
-    st.error(f"🚨 Approval Error: The Admin approved you for sheet '{st.session_state['user_sheet_name']}', but the Bot cannot find it.")
-    st.info("Ask the Admin: 'Did you share the sheet with the Bot Email?'")
+    # THIS IS THE "PENDING" STATE
+    st.warning(f"⏳ **Account Pending Activation**")
+    st.info(f"""
+    You have successfully registered, but the Admin has not created your sheet **'{st.session_state['user_sheet_name']}'** yet.
+    
+    **Please contact the Admin and ask them to create this sheet.**
+    """)
+    if st.button("Back to Login"):
+        st.session_state['user_sheet_name'] = None
+        st.rerun()
     st.stop()
 except Exception as e:
     st.error(f"Connection Error: {e}")
@@ -179,7 +175,6 @@ with st.sidebar:
 
 # --- HELPER FUNCTIONS ---
 def load_data(sheet_object):
-    # Try/Except blocks allow opening a brand new blank sheet without crashing
     try:
         data_exp = sheet_object.worksheet("Expenses").get_all_records()
         df_exp = pd.DataFrame(data_exp)
@@ -202,11 +197,11 @@ def load_data(sheet_object):
     return df_exp, df_inc
 
 def save_row(sheet_object, tab_name, data):
-    # Ensure tab exists before writing
+    # Smart "Auto-Repair": If you (Admin) forget to create the tabs, 
+    # the app will create them the first time the user adds data!
     try:
         worksheet = sheet_object.worksheet(tab_name)
     except:
-        # Auto-create tab if Admin forgot
         worksheet = sheet_object.add_worksheet(title=tab_name, rows="1000", cols="10")
         if tab_name == "Expenses":
             worksheet.append_row(["Date", "Description", "Category", "Amount"])
