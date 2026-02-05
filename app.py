@@ -1,182 +1,198 @@
 import streamlit as st
 import pandas as pd
-from openpyxl import load_workbook
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 import datetime
-import os
+import plotly.express as px  # NEW: Charting Library
 
 # --- CONFIGURATION ---
-FILE_NAME = "my_budget_data.xlsx"
 st.set_page_config(page_title="My Personal Budget", page_icon="💰", layout="wide")
 
+# --- PASSWORD PROTECTION ---
+password = st.sidebar.text_input("Enter Password", type="password")
+if password != "p@ssw0rd":
+    st.info("🔒 Please enter the password to access the budget.")
+    st.stop()
+
+# --- CONNECT TO GOOGLE SHEETS ---
+def get_google_sheet_driver():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds_dict = dict(st.secrets["gcp_service_account"])
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    client = gspread.authorize(creds)
+    return client.open("My Personal Budget") # Make sure this matches your Sheet Name
+
 # --- HELPER FUNCTIONS ---
-def load_data():
-    """Loads all sheets from the Excel file."""
+def load_data(sheet_object):
+    # Load Expenses
     try:
-        return pd.read_excel(FILE_NAME, sheet_name=None)
-    except FileNotFoundError:
-        return None
+        data_exp = sheet_object.worksheet("Expenses").get_all_records()
+        df_exp = pd.DataFrame(data_exp)
+    except:
+        df_exp = pd.DataFrame()
 
-def save_row(sheet_name, data):
-    """Appends a list of values to the specified Excel sheet."""
-    wb = load_workbook(FILE_NAME)
-    ws = wb[sheet_name]
-    ws.append(data)
-    wb.save(FILE_NAME)
+    # Load Income
+    try:
+        data_inc = sheet_object.worksheet("Income").get_all_records()
+        df_inc = pd.DataFrame(data_inc)
+    except:
+        df_inc = pd.DataFrame()
 
-def delete_row(sheet_name, row_index):
-    """Deletes a row from Excel by index (row_index is 0-based index from DataFrame)."""
-    wb = load_workbook(FILE_NAME)
-    ws = wb[sheet_name]
-    # Excel rows are 1-based. Row 1 is header. Data starts at Row 2.
-    # So DataFrame index 0 corresponds to Excel Row 2.
-    # We delete row_index + 2.
-    ws.delete_rows(row_index + 2)
-    wb.save(FILE_NAME)
+    # Force Columns
+    if df_exp.empty or 'Date' not in df_exp.columns:
+        df_exp = pd.DataFrame(columns=["Date", "Description", "Category", "Amount"])
+    if df_inc.empty or 'Date' not in df_inc.columns:
+        df_inc = pd.DataFrame(columns=["Date", "Source", "Amount"])
 
-# --- SUCCESS MESSAGE HANDLING ---
-# This ensures the message survives the page reload (st.rerun)
+    # Convert Dates
+    df_exp['Date'] = pd.to_datetime(df_exp['Date'], errors='coerce')
+    df_inc['Date'] = pd.to_datetime(df_inc['Date'], errors='coerce')
+
+    return df_exp, df_inc
+
+def save_row(sheet_object, tab_name, data):
+    worksheet = sheet_object.worksheet(tab_name)
+    worksheet.append_row(data)
+
+def delete_row(sheet_object, tab_name, row_index):
+    worksheet = sheet_object.worksheet(tab_name)
+    worksheet.delete_rows(row_index + 2)
+
+# --- APP START ---
+st.title("💰 My Personal Budget")
+
+try:
+    sh = get_google_sheet_driver()
+    df_expenses, df_income = load_data(sh)
+except Exception as e:
+    st.error(f"Connection Error: {e}")
+    st.stop()
+
+# --- SUCCESS MESSAGE ---
 if 'success_msg' in st.session_state:
     st.success(st.session_state['success_msg'])
     del st.session_state['success_msg']
 
-st.title("💰 My Personal Budget Tracker")
-
-# Load current data
-all_data = load_data()
-
-if all_data is None:
-    st.error(f"Error: {FILE_NAME} not found. Please run setup_storage.py first.")
-    st.stop()
-
 # --- TABS ---
-# Reordered: Income First
-tab1, tab2, tab3 = st.tabs(["📥 Add Income", "💸 Add Expense", "📊 Analytics & History"])
+tab1, tab2, tab3 = st.tabs(["📥 Add Income", "💸 Add Expense", "📊 Analytics"])
 
-# --- TAB 1: ADD INCOME ---
+# --- TAB 1: INCOME ---
 with tab1:
-    st.header("New Income Entry")
+    st.header("New Income")
     with st.form("income_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            date_inc = st.date_input("Date", datetime.date.today(), key="inc_date")
-            source_inc = st.text_input("Source (e.g., Salary, Freelance)")
-        with col2:
-            amount_inc = st.number_input("Amount (RM)", min_value=0.0, format="%.2f", key="inc_amt")
-            
-        submitted_inc = st.form_submit_button("Save Income", type="primary")
-        
-        if submitted_inc:
-            save_row('Income', [date_inc, source_inc, amount_inc])
-            st.session_state['success_msg'] = f"✅ Income Saved: RM{amount_inc} from {source_inc}"
+        d_inc = st.date_input("Date", datetime.date.today())
+        s_inc = st.text_input("Source")
+        a_inc = st.number_input("Amount", min_value=0.0, format="%.2f")
+        if st.form_submit_button("Save Income"):
+            save_row(sh, 'Income', [str(d_inc), s_inc, a_inc])
+            st.session_state['success_msg'] = "✅ Income Saved!"
             st.rerun()
 
-# --- TAB 2: ADD EXPENSE ---
+# --- TAB 2: EXPENSE ---
 with tab2:
-    st.header("New Expense Entry")
+    st.header("New Expense")
     with st.form("expense_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            date_exp = st.date_input("Date", datetime.date.today())
-            category_exp = st.selectbox("Category", ["Food", "Transport", "Utilities", "Shopping", "Housing", "Other"])
-        with col2:
-            amount_exp = st.number_input("Amount (RM)", min_value=0.0, format="%.2f")
-            desc_exp = st.text_input("Description (e.g., Nasi Lemak)")
-        
-        submitted_exp = st.form_submit_button("Save Expense", type="primary")
-        
-        if submitted_exp:
-            save_row('Expenses', [date_exp, desc_exp, category_exp, amount_exp])
-            st.session_state['success_msg'] = f"✅ Expense Saved: {desc_exp} (RM{amount_exp})"
+        d_exp = st.date_input("Date", datetime.date.today())
+        c_exp = st.selectbox("Category", ["Food", "Transport", "Utilities", "Shopping", "Housing", "Other"])
+        a_exp = st.number_input("Amount", min_value=0.0, format="%.2f")
+        desc_exp = st.text_input("Description")
+        if st.form_submit_button("Save Expense"):
+            save_row(sh, 'Expenses', [str(d_exp), desc_exp, c_exp, a_exp])
+            st.session_state['success_msg'] = "✅ Expense Saved!"
             st.rerun()
 
-# --- TAB 3: ANALYTICS & HISTORY (View, Filter, Delete) ---
+# --- TAB 3: ANALYTICS (Charts & Graphs) ---
 with tab3:
-    st.header("Monthly Overview")
-
-    # 1. Prepare Data
-    df_inc = all_data['Income']
-    df_exp = all_data['Expenses']
+    st.header("Spending Analysis")
     
-    # Convert Date columns to datetime for filtering
-    df_inc['Date'] = pd.to_datetime(df_inc['Date'])
-    df_exp['Date'] = pd.to_datetime(df_exp['Date'])
-
-    # 2. Month Filter
-    # Get unique months from both datasets
-    all_dates = pd.concat([df_inc['Date'], df_exp['Date']]).dropna()
+    # Combined Date Logic
+    all_dates = pd.concat([df_income['Date'], df_expenses['Date']]).dropna()
     
     if not all_dates.empty:
-        # --- FIX: Use drop_duplicates() instead of unique() so we can sort ---
-        month_years = all_dates.dt.to_period('M').drop_duplicates().sort_values(ascending=False)
+        # 1. TOGGLE: Monthly vs Annual
+        view_mode = st.radio("Select View Mode:", ["Monthly", "Annual"], horizontal=True)
         
-        selected_period = st.selectbox("Select Month", month_years)
+        f_inc = df_income.copy()
+        f_exp = df_expenses.copy()
         
-        # Filter DataFrames based on selection
-        mask_inc = df_inc['Date'].dt.to_period('M') == selected_period
-        mask_exp = df_exp['Date'].dt.to_period('M') == selected_period
-        
-        filtered_inc = df_inc[mask_inc].copy()
-        filtered_exp = df_exp[mask_exp].copy()
-        
-        # 3. Calculate Totals
-        total_income = filtered_inc['Amount'].sum()
-        total_expense = filtered_exp['Amount'].sum()
-        balance = total_income - total_expense
+        # 2. FILTER DATA based on Toggle
+        if view_mode == "Monthly":
+            # Get list of Month-Years
+            month_years = all_dates.dt.to_period('M').drop_duplicates().sort_values(ascending=False)
+            selected_period = st.selectbox("Select Month", month_years)
+            
+            # Filter
+            mask_inc = f_inc['Date'].dt.to_period('M') == selected_period
+            mask_exp = f_exp['Date'].dt.to_period('M') == selected_period
+            f_inc = f_inc[mask_inc]
+            f_exp = f_exp[mask_exp]
+        else:
+            # Annual: Filter by Year
+            years = all_dates.dt.year.unique()
+            selected_year = st.selectbox("Select Year", sorted(years, reverse=True))
+            
+            mask_inc = f_inc['Date'].dt.year == selected_year
+            mask_exp = f_exp['Date'].dt.year == selected_year
+            f_inc = f_inc[mask_inc]
+            f_exp = f_exp[mask_exp]
 
-        # 4. Display Metrics
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Income", f"RM {total_income:,.2f}")
-        m2.metric("Total Expenses", f"RM {total_expense:,.2f}")
-        m3.metric("Remaining Balance", f"RM {balance:,.2f}", delta_color="normal")
+        # 3. METRICS (Top Row)
+        tot_inc = f_inc['Amount'].sum()
+        tot_exp = f_exp['Amount'].sum()
+        balance = tot_inc - tot_exp
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Income", f"RM {tot_inc:,.2f}")
+        c2.metric("Total Expenses", f"RM {tot_exp:,.2f}")
+        c3.metric("Balance", f"RM {balance:,.2f}", delta_color="normal")
         
         st.divider()
 
-        # 5. Detailed View & Delete Functionality
-        c1, c2 = st.columns(2)
-        
-        with c1:
-            st.subheader("Expenses Details")
-            if not filtered_exp.empty:
-                for idx, row in filtered_exp.iterrows():
-                    col_text, col_btn = st.columns([4, 1])
-                    with col_text:
-                        st.text(f"{row['Date'].date()} | {row['Category']} | {row['Description']} | RM{row['Amount']}")
-                    with col_btn:
-                        if st.button("🗑", key=f"del_exp_{idx}", help="Delete this entry"):
-                            delete_row('Expenses', idx)
-                            st.session_state['success_msg'] = "❌ Entry Deleted!"
-                            st.rerun()
-                
-                st.download_button(
-                    label="Download Expenses (CSV)",
-                    data=filtered_exp.to_csv(index=False),
-                    file_name=f"expenses_{selected_period}.csv",
-                    mime="text/csv"
-                )
-            else:
-                st.info("No expenses found for this month.")
+        # 4. CHARTS (The new UI/UX part!)
+        if not f_exp.empty:
+            col_chart1, col_chart2 = st.columns(2)
+            
+            with col_chart1:
+                st.subheader("Spending by Category")
+                # Group data for Pie Chart
+                pie_data = f_exp.groupby("Category")["Amount"].sum().reset_index()
+                fig_pie = px.pie(pie_data, values='Amount', names='Category', hole=0.4)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            
+            with col_chart2:
+                st.subheader("Income vs Expenses")
+                # Simple Bar Chart Comparison
+                bar_data = pd.DataFrame({
+                    "Type": ["Income", "Expenses"],
+                    "Amount": [tot_inc, tot_exp]
+                })
+                fig_bar = px.bar(bar_data, x="Type", y="Amount", color="Type", 
+                                 color_discrete_map={"Income": "green", "Expenses": "red"})
+                st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.info("No expenses found for this period, so no charts to show.")
 
-        with c2:
-            st.subheader("Income Details")
-            if not filtered_inc.empty:
-                for idx, row in filtered_inc.iterrows():
-                    col_text, col_btn = st.columns([4, 1])
-                    with col_text:
-                        st.text(f"{row['Date'].date()} | {row['Source']} | RM{row['Amount']}")
-                    with col_btn:
-                        if st.button("🗑", key=f"del_inc_{idx}", help="Delete this entry"):
-                            delete_row('Income', idx)
-                            st.session_state['success_msg'] = "❌ Entry Deleted!"
-                            st.rerun()
-                            
-                st.download_button(
-                    label="Download Income (CSV)",
-                    data=filtered_inc.to_csv(index=False),
-                    file_name=f"income_{selected_period}.csv",
-                    mime="text/csv"
-                )
-            else:
-                st.info("No income found for this month.")
+        st.divider()
+        
+        # 5. DATA TABLES (View & Delete)
+        with st.expander("Show Detailed Transaction Records"):
+            col_l, col_r = st.columns(2)
+            with col_l:
+                st.subheader("Expenses List")
+                for idx, row in f_exp.iterrows():
+                    st.text(f"{row['Date'].date()} | {row['Description']} | RM{row['Amount']}")
+                    if st.button("🗑 Delete", key=f"del_e_{idx}"):
+                        delete_row(sh, 'Expenses', idx)
+                        st.session_state['success_msg'] = "❌ Deleted!"
+                        st.rerun()
+            with col_r:
+                st.subheader("Income List")
+                for idx, row in f_inc.iterrows():
+                    st.text(f"{row['Date'].date()} | {row['Source']} | RM{row['Amount']}")
+                    if st.button("🗑 Delete", key=f"del_i_{idx}"):
+                        delete_row(sh, 'Income', idx)
+                        st.session_state['success_msg'] = "❌ Deleted!"
+                        st.rerun()
 
     else:
-        st.info("No data available yet. Add some entries!")
+        st.info("No data found. Add your first income or expense!")
