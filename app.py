@@ -8,70 +8,55 @@ import datetime
 st.set_page_config(page_title="My Personal Budget", page_icon="💰", layout="wide")
 
 # --- PASSWORD PROTECTION ---
-# Create a password input in the sidebar
 password = st.sidebar.text_input("Enter Password", type="password")
-
-# Replace "1234" with whatever secret code you want
-if password != "p@ssw0rd":
+if password != "p@ssw0rd": # Change this to your password
     st.info("🔒 Please enter the password to access the budget.")
-    st.stop() # This stops the rest of the app from loading
+    st.stop()
 
 # --- CONNECT TO GOOGLE SHEETS ---
 def get_google_sheet_driver():
-    """Connects to Google Sheets using Streamlit Secrets."""
-    # We load the secrets from the TOML configuration we set up in Streamlit Cloud
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds_dict = dict(st.secrets["gcp_service_account"]) # Convert TOML object to dict
-    
+    creds_dict = dict(st.secrets["gcp_service_account"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
-    
-    # Open the sheet by Name (Make sure your Google Sheet is named EXACTLY this)
-    # Or you can use .open_by_key('YOUR_SHEET_ID_FROM_URL') which is safer
-    sheet = client.open("My Personal Budget") 
-    return sheet
+    return client.open("My Personal Budget")
 
 # --- HELPER FUNCTIONS ---
 def load_data(sheet_object):
-    """Loads data from Google Sheets into Pandas DataFrames."""
-    
-    # --- 1. Load Expenses ---
+    # Load Expenses
     try:
-        worksheet_exp = sheet_object.worksheet("Expenses")
-        data_exp = worksheet_exp.get_all_records()
+        data_exp = sheet_object.worksheet("Expenses").get_all_records()
         df_exp = pd.DataFrame(data_exp)
-    except gspread.exceptions.WorksheetNotFound:
-        # If sheet doesn't exist, return empty DF
+    except:
         df_exp = pd.DataFrame()
 
-    # FORCE COLUMNS if empty (Fixes the KeyError)
-    if df_exp.empty or 'Date' not in df_exp.columns:
-        df_exp = pd.DataFrame(columns=["Date", "Description", "Category", "Amount"])
-
-    # --- 2. Load Income ---
+    # Load Income
     try:
-        worksheet_inc = sheet_object.worksheet("Income")
-        data_inc = worksheet_inc.get_all_records()
+        data_inc = sheet_object.worksheet("Income").get_all_records()
         df_inc = pd.DataFrame(data_inc)
-    except gspread.exceptions.WorksheetNotFound:
+    except:
         df_inc = pd.DataFrame()
 
-    # FORCE COLUMNS if empty
+    # FORCE COLUMNS & TYPES (The Fix)
+    # Even if empty, we enforce the structure
+    if df_exp.empty or 'Date' not in df_exp.columns:
+        df_exp = pd.DataFrame(columns=["Date", "Description", "Category", "Amount"])
+    
     if df_inc.empty or 'Date' not in df_inc.columns:
         df_inc = pd.DataFrame(columns=["Date", "Source", "Amount"])
-    
+
+    # CRITICAL FIX: Always convert to datetime, enforcing errors='coerce' to handle empty strings
+    df_exp['Date'] = pd.to_datetime(df_exp['Date'], errors='coerce')
+    df_inc['Date'] = pd.to_datetime(df_inc['Date'], errors='coerce')
+
     return df_exp, df_inc
 
 def save_row(sheet_object, tab_name, data):
-    """Appends a row to the specific Google Sheet tab."""
     worksheet = sheet_object.worksheet(tab_name)
     worksheet.append_row(data)
 
 def delete_row(sheet_object, tab_name, row_index):
-    """Deletes a row. Note: row_index is 0-based from DataFrame."""
     worksheet = sheet_object.worksheet(tab_name)
-    # Google Sheets is 1-based. Header is Row 1. Data starts Row 2.
-    # If DataFrame index is 0, that is Sheet Row 2.
     worksheet.delete_rows(row_index + 2)
 
 # --- APP START ---
@@ -84,7 +69,7 @@ except Exception as e:
     st.error(f"Connection Error: {e}")
     st.stop()
 
-# --- SUCCESS MESSAGE HANDLING ---
+# --- SUCCESS MESSAGE ---
 if 'success_msg' in st.session_state:
     st.success(st.session_state['success_msg'])
     del st.session_state['success_msg']
@@ -99,9 +84,7 @@ with tab1:
         d_inc = st.date_input("Date", datetime.date.today())
         s_inc = st.text_input("Source")
         a_inc = st.number_input("Amount", min_value=0.0, format="%.2f")
-        
         if st.form_submit_button("Save Income"):
-            # Convert date to string for Google Sheets
             save_row(sh, 'Income', [str(d_inc), s_inc, a_inc])
             st.session_state['success_msg'] = "✅ Income Saved!"
             st.rerun()
@@ -114,7 +97,6 @@ with tab2:
         c_exp = st.selectbox("Category", ["Food", "Transport", "Utilities", "Shopping", "Housing", "Other"])
         a_exp = st.number_input("Amount", min_value=0.0, format="%.2f")
         desc_exp = st.text_input("Description")
-        
         if st.form_submit_button("Save Expense"):
             save_row(sh, 'Expenses', [str(d_exp), desc_exp, c_exp, a_exp])
             st.session_state['success_msg'] = "✅ Expense Saved!"
@@ -124,19 +106,16 @@ with tab2:
 with tab3:
     st.header("Overview")
     
-    # Basic Data Cleanup for display
-    if not df_income.empty:
-        df_income['Date'] = pd.to_datetime(df_income['Date'])
-    if not df_expenses.empty:
-        df_expenses['Date'] = pd.to_datetime(df_expenses['Date'])
-        
-    # --- Month Filter (Same logic as before) ---
+    # Combined Date Filter
+    # We drop NaT (Not a Time) values to prevent crashes on empty rows
     all_dates = pd.concat([df_income['Date'], df_expenses['Date']]).dropna()
     
     if not all_dates.empty:
+        # Now safe to use .dt accessor because we forced conversion in load_data
         month_years = all_dates.dt.to_period('M').drop_duplicates().sort_values(ascending=False)
         selected_period = st.selectbox("Select Month", month_years)
         
+        # Filter Logic
         mask_inc = df_income['Date'].dt.to_period('M') == selected_period
         mask_exp = df_expenses['Date'].dt.to_period('M') == selected_period
         
@@ -144,8 +123,8 @@ with tab3:
         f_exp = df_expenses[mask_exp].copy()
         
         # Metrics
-        tot_inc = f_inc['Amount'].sum() if not f_inc.empty else 0
-        tot_exp = f_exp['Amount'].sum() if not f_exp.empty else 0
+        tot_inc = f_inc['Amount'].sum()
+        tot_exp = f_exp['Amount'].sum()
         
         c1, c2, c3 = st.columns(3)
         c1.metric("Income", f"RM {tot_inc:,.2f}")
@@ -154,14 +133,12 @@ with tab3:
         
         st.divider()
         
-        # Display & Delete
+        # Display Tables
         col_l, col_r = st.columns(2)
         with col_l:
             st.subheader("Expenses")
             for idx, row in f_exp.iterrows():
-                # Display row
                 st.text(f"{row['Date'].date()} | {row['Description']} | RM{row['Amount']}")
-                # Delete Button
                 if st.button("🗑 Delete", key=f"del_e_{idx}"):
                     delete_row(sh, 'Expenses', idx)
                     st.session_state['success_msg'] = "❌ Deleted!"
@@ -176,4 +153,4 @@ with tab3:
                     st.session_state['success_msg'] = "❌ Deleted!"
                     st.rerun()
     else:
-        st.info("No data found in Google Sheet.")
+        st.info("No data found. Add your first income or expense to see the dashboard!")
