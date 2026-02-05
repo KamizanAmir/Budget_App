@@ -6,7 +6,7 @@ import datetime
 import plotly.express as px
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Family Budget Tracker", page_icon="🏠", layout="wide")
+st.set_page_config(page_title="Budget Tracker", page_icon="🏠", layout="wide")
 
 # --- CONNECT TO GOOGLE SHEETS (API) ---
 def get_client():
@@ -58,7 +58,7 @@ if 'username' not in st.session_state:
 
 # --- LOGIN SCREEN ---
 if st.session_state['user_sheet_name'] is None:
-    st.title("🔐 Family Budget Login")
+    st.title("🔐 Monitoring Budget Login")
     
     with st.form("login_form"):
         user_input = st.text_input("Username")
