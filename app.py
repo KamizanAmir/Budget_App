@@ -6,7 +6,7 @@ import datetime
 import plotly.express as px
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Budget Tracker", page_icon="🏠", layout="wide")
+st.set_page_config(page_title="Budget Tracker", page_icon="💰", layout="wide")
 
 # --- CONNECT TO GOOGLE SHEETS (API) ---
 def get_client():
@@ -34,12 +34,7 @@ def check_login(username, password):
     return None
 
 def register_user_request(username, password, preferred_sheet_name):
-    """
-    Adds user to DB with their PREFERRED Sheet Name immediately.
-    """
     client = get_client()
-    
-    # 1. Check if Username Exists
     try:
         master_sheet = client.open("Budget_App_Users").sheet1
         records = master_sheet.get_all_records()
@@ -49,9 +44,7 @@ def register_user_request(username, password, preferred_sheet_name):
     except:
         pass 
 
-    # 2. Add to Database
     try:
-        # Columns: Username, Password, Sheet_Name
         master_sheet.append_row([username, password, preferred_sheet_name]) 
         return True, f"Request sent! Please wait for the Admin to create the sheet '{preferred_sheet_name}'."
     except Exception as e:
@@ -73,9 +66,15 @@ if 'user_sheet_name' not in st.session_state:
 if 'username' not in st.session_state:
     st.session_state['username'] = None
 
-# --- LOGIN / SIGN UP SCREEN ---
+# ==========================================
+#  LOGIC SPLIT: LOGIN vs MAIN APP
+# ==========================================
+
 if st.session_state['user_sheet_name'] is None:
-    st.title("🔐 Budget App")
+    # ---------------------------
+    # SCENE 1: LOGIN / REQUEST
+    # ---------------------------
+    st.title("🔐 Budget Tracker")
     
     tab_login, tab_signup = st.tabs(["Login", "Request Account"])
     
@@ -92,7 +91,7 @@ if st.session_state['user_sheet_name'] is None:
                 if sheet_name:
                     st.session_state['user_sheet_name'] = sheet_name
                     st.session_state['username'] = user_input
-                    # We don't rerun yet, we let the Main App block check if the sheet exists
+                    st.rerun() # Force reload to switch to SCENE 2 immediately
                 else:
                     st.error("Invalid Username or Password")
 
@@ -116,203 +115,197 @@ if st.session_state['user_sheet_name'] is None:
                         st.error(message)
                 else:
                     st.warning("Please fill in all fields.")
-    
-    # If not logged in, stop here
-    if st.session_state['user_sheet_name'] is None:
+
+else:
+    # ---------------------------
+    # SCENE 2: MAIN APP (Only runs if logged in)
+    # ---------------------------
+    try:
+        client = get_client()
+        sh = client.open(st.session_state['user_sheet_name']) 
+    except gspread.exceptions.SpreadsheetNotFound:
+        st.warning(f"⏳ **Account Pending Activation**")
+        st.info(f"""
+        You have successfully registered, but the Admin has not created your sheet **'{st.session_state['user_sheet_name']}'** yet.
+        
+        **Please contact the Admin (kamizan980505@gmail.com) and ask them to create this sheet.**
+        """)
+        if st.button("Back to Login"):
+            st.session_state['user_sheet_name'] = None
+            st.rerun()
+        st.stop()
+    except Exception as e:
+        st.error(f"Connection Error: {e}")
         st.stop()
 
-# ==========================================
-#  MAIN APP (Runs only after login success)
-# ==========================================
-try:
-    client = get_client()
-    sh = client.open(st.session_state['user_sheet_name']) 
-except gspread.exceptions.SpreadsheetNotFound:
-    # THIS IS THE "PENDING" STATE
-    st.warning(f"⏳ **Account Pending Activation**")
-    st.info(f"""
-    You have successfully registered, but the Admin has not created your sheet **'{st.session_state['user_sheet_name']}'** yet.
-    
-    **Please contact the Admin and ask them to create this sheet.**
-    """)
-    if st.button("Back to Login"):
-        st.session_state['user_sheet_name'] = None
-        st.rerun()
-    st.stop()
-except Exception as e:
-    st.error(f"Connection Error: {e}")
-    st.stop()
-
-# --- SIDEBAR ---
-with st.sidebar:
-    st.write(f"User: **{st.session_state['username']}**")
-    
-    with st.expander("⚙️ Change Password"):
-        with st.form("pwd_change_form"):
-            curr_pass = st.text_input("Current Password", type="password")
-            new_pass = st.text_input("New Password", type="password")
-            conf_pass = st.text_input("Confirm Password", type="password")
-            
-            if st.form_submit_button("Update"):
-                real_sheet_check = check_login(st.session_state['username'], curr_pass)
-                if real_sheet_check:
-                    if new_pass == conf_pass and new_pass != "":
-                        if change_user_password(st.session_state['username'], new_pass):
-                            st.success("Updated! Logging out...")
-                            st.session_state['user_sheet_name'] = None
-                            st.rerun()
+    # --- SIDEBAR ---
+    with st.sidebar:
+        st.write(f"User: **{st.session_state['username']}**")
+        
+        with st.expander("⚙️ Change Password"):
+            with st.form("pwd_change_form"):
+                curr_pass = st.text_input("Current Password", type="password")
+                new_pass = st.text_input("New Password", type="password")
+                conf_pass = st.text_input("Confirm Password", type="password")
+                
+                if st.form_submit_button("Update"):
+                    real_sheet_check = check_login(st.session_state['username'], curr_pass)
+                    if real_sheet_check:
+                        if new_pass == conf_pass and new_pass != "":
+                            if change_user_password(st.session_state['username'], new_pass):
+                                st.success("Updated! Logging out...")
+                                st.session_state['user_sheet_name'] = None
+                                st.rerun()
+                            else:
+                                st.error("Database Error.")
                         else:
-                            st.error("Database Error.")
+                            st.error("Passwords do not match.")
                     else:
-                        st.error("Passwords do not match.")
-                else:
-                    st.error("Current password incorrect.")
-    
-    st.divider()
-    if st.button("Logout"):
-        st.session_state['user_sheet_name'] = None
-        st.rerun()
+                        st.error("Current password incorrect.")
+        
+        st.divider()
+        if st.button("Logout"):
+            st.session_state['user_sheet_name'] = None
+            st.rerun()
 
-# --- HELPER FUNCTIONS ---
-def load_data(sheet_object):
-    try:
-        data_exp = sheet_object.worksheet("Expenses").get_all_records()
-        df_exp = pd.DataFrame(data_exp)
-    except:
-        df_exp = pd.DataFrame()
-    try:
-        data_inc = sheet_object.worksheet("Income").get_all_records()
-        df_inc = pd.DataFrame(data_inc)
-    except:
-        df_inc = pd.DataFrame()
+    # --- HELPER FUNCTIONS ---
+    def load_data(sheet_object):
+        try:
+            data_exp = sheet_object.worksheet("Expenses").get_all_records()
+            df_exp = pd.DataFrame(data_exp)
+        except:
+            df_exp = pd.DataFrame()
+        try:
+            data_inc = sheet_object.worksheet("Income").get_all_records()
+            df_inc = pd.DataFrame(data_inc)
+        except:
+            df_inc = pd.DataFrame()
 
-    if df_exp.empty or 'Date' not in df_exp.columns:
-        df_exp = pd.DataFrame(columns=["Date", "Description", "Category", "Amount"])
-    if df_inc.empty or 'Date' not in df_inc.columns:
-        df_inc = pd.DataFrame(columns=["Date", "Source", "Amount"])
+        if df_exp.empty or 'Date' not in df_exp.columns:
+            df_exp = pd.DataFrame(columns=["Date", "Description", "Category", "Amount"])
+        if df_inc.empty or 'Date' not in df_inc.columns:
+            df_inc = pd.DataFrame(columns=["Date", "Source", "Amount"])
 
-    df_exp['Date'] = pd.to_datetime(df_exp['Date'], errors='coerce')
-    df_inc['Date'] = pd.to_datetime(df_inc['Date'], errors='coerce')
+        df_exp['Date'] = pd.to_datetime(df_exp['Date'], errors='coerce')
+        df_inc['Date'] = pd.to_datetime(df_inc['Date'], errors='coerce')
 
-    return df_exp, df_inc
+        return df_exp, df_inc
 
-def save_row(sheet_object, tab_name, data):
-    # Smart "Auto-Repair": If you (Admin) forget to create the tabs, 
-    # the app will create them the first time the user adds data!
-    try:
+    def save_row(sheet_object, tab_name, data):
+        try:
+            worksheet = sheet_object.worksheet(tab_name)
+        except:
+            worksheet = sheet_object.add_worksheet(title=tab_name, rows="1000", cols="10")
+            if tab_name == "Expenses":
+                worksheet.append_row(["Date", "Description", "Category", "Amount"])
+            else:
+                worksheet.append_row(["Date", "Source", "Amount"])
+                
+        worksheet.append_row(data)
+
+    def delete_row(sheet_object, tab_name, row_index):
         worksheet = sheet_object.worksheet(tab_name)
-    except:
-        worksheet = sheet_object.add_worksheet(title=tab_name, rows="1000", cols="10")
-        if tab_name == "Expenses":
-            worksheet.append_row(["Date", "Description", "Category", "Amount"])
-        else:
-            worksheet.append_row(["Date", "Source", "Amount"])
+        worksheet.delete_rows(row_index + 2)
+
+    # --- LOAD DATA ---
+    df_expenses, df_income = load_data(sh)
+
+    if 'success_msg' in st.session_state:
+        st.success(st.session_state['success_msg'])
+        del st.session_state['success_msg']
+
+    st.title(f"💰 {st.session_state['username'].capitalize()}'s Budget")
+
+    # --- TABS ---
+    tab1, tab2, tab3 = st.tabs(["📥 Add Income", "💸 Add Expense", "📊 Analytics"])
+
+    with tab1:
+        st.header("New Income")
+        with st.form("income_form", clear_on_submit=True):
+            d_inc = st.date_input("Date", datetime.date.today())
+            s_inc = st.text_input("Source")
+            a_inc = st.number_input("Amount", min_value=0.0, format="%.2f")
+            if st.form_submit_button("Save Income"):
+                save_row(sh, 'Income', [str(d_inc), s_inc, a_inc])
+                st.session_state['success_msg'] = "✅ Income Saved!"
+                st.rerun()
+
+    with tab2:
+        st.header("New Expense")
+        with st.form("expense_form", clear_on_submit=True):
+            d_exp = st.date_input("Date", datetime.date.today())
+            c_exp = st.selectbox("Category", ["Food", "Transport", "Utilities", "Shopping", "Housing", "Other"])
+            a_exp = st.number_input("Amount", min_value=0.0, format="%.2f")
+            desc_exp = st.text_input("Description")
+            if st.form_submit_button("Save Expense"):
+                save_row(sh, 'Expenses', [str(d_exp), desc_exp, c_exp, a_exp])
+                st.session_state['success_msg'] = "✅ Expense Saved!"
+                st.rerun()
+
+    with tab3:
+        st.header("Spending Analysis")
+        all_dates = pd.concat([df_income['Date'], df_expenses['Date']]).dropna()
+        
+        if not all_dates.empty:
+            view_mode = st.radio("Select View Mode:", ["Monthly", "Annual"], horizontal=True)
+            f_inc, f_exp = df_income.copy(), df_expenses.copy()
             
-    worksheet.append_row(data)
+            if view_mode == "Monthly":
+                month_years = all_dates.dt.to_period('M').drop_duplicates().sort_values(ascending=False)
+                selected_period = st.selectbox("Select Month", month_years)
+                mask_inc = f_inc['Date'].dt.to_period('M') == selected_period
+                mask_exp = f_exp['Date'].dt.to_period('M') == selected_period
+                f_inc, f_exp = f_inc[mask_inc], f_exp[mask_exp]
+            else:
+                years = all_dates.dt.year.unique()
+                selected_year = st.selectbox("Select Year", sorted(years, reverse=True))
+                mask_inc = f_inc['Date'].dt.year == selected_year
+                mask_exp = f_exp['Date'].dt.year == selected_year
+                f_inc, f_exp = f_inc[mask_inc], f_exp[mask_exp]
 
-def delete_row(sheet_object, tab_name, row_index):
-    worksheet = sheet_object.worksheet(tab_name)
-    worksheet.delete_rows(row_index + 2)
+            tot_inc = f_inc['Amount'].sum()
+            tot_exp = f_exp['Amount'].sum()
+            balance = tot_inc - tot_exp
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Income", f"RM {tot_inc:,.2f}")
+            c2.metric("Total Expenses", f"RM {tot_exp:,.2f}")
+            c3.metric("Balance", f"RM {balance:,.2f}")
+            st.divider()
 
-# --- LOAD DATA ---
-df_expenses, df_income = load_data(sh)
-
-if 'success_msg' in st.session_state:
-    st.success(st.session_state['success_msg'])
-    del st.session_state['success_msg']
-
-st.title(f"💰 {st.session_state['username'].capitalize()}'s Budget")
-
-# --- TABS ---
-tab1, tab2, tab3 = st.tabs(["📥 Add Income", "💸 Add Expense", "📊 Analytics"])
-
-with tab1:
-    st.header("New Income")
-    with st.form("income_form", clear_on_submit=True):
-        d_inc = st.date_input("Date", datetime.date.today())
-        s_inc = st.text_input("Source")
-        a_inc = st.number_input("Amount", min_value=0.0, format="%.2f")
-        if st.form_submit_button("Save Income"):
-            save_row(sh, 'Income', [str(d_inc), s_inc, a_inc])
-            st.session_state['success_msg'] = "✅ Income Saved!"
-            st.rerun()
-
-with tab2:
-    st.header("New Expense")
-    with st.form("expense_form", clear_on_submit=True):
-        d_exp = st.date_input("Date", datetime.date.today())
-        c_exp = st.selectbox("Category", ["Food", "Transport", "Utilities", "Shopping", "Housing", "Other"])
-        a_exp = st.number_input("Amount", min_value=0.0, format="%.2f")
-        desc_exp = st.text_input("Description")
-        if st.form_submit_button("Save Expense"):
-            save_row(sh, 'Expenses', [str(d_exp), desc_exp, c_exp, a_exp])
-            st.session_state['success_msg'] = "✅ Expense Saved!"
-            st.rerun()
-
-with tab3:
-    st.header("Spending Analysis")
-    all_dates = pd.concat([df_income['Date'], df_expenses['Date']]).dropna()
-    
-    if not all_dates.empty:
-        view_mode = st.radio("Select View Mode:", ["Monthly", "Annual"], horizontal=True)
-        f_inc, f_exp = df_income.copy(), df_expenses.copy()
-        
-        if view_mode == "Monthly":
-            month_years = all_dates.dt.to_period('M').drop_duplicates().sort_values(ascending=False)
-            selected_period = st.selectbox("Select Month", month_years)
-            mask_inc = f_inc['Date'].dt.to_period('M') == selected_period
-            mask_exp = f_exp['Date'].dt.to_period('M') == selected_period
-            f_inc, f_exp = f_inc[mask_inc], f_exp[mask_exp]
+            if not f_exp.empty:
+                col_chart1, col_chart2 = st.columns(2)
+                with col_chart1:
+                    st.subheader("Spending by Category")
+                    pie_data = f_exp.groupby("Category")["Amount"].sum().reset_index()
+                    fig_pie = px.pie(pie_data, values='Amount', names='Category', hole=0.4)
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                with col_chart2:
+                    st.subheader("Income vs Expenses")
+                    bar_data = pd.DataFrame({"Type": ["Income", "Expenses"], "Amount": [tot_inc, tot_exp]})
+                    fig_bar = px.bar(bar_data, x="Type", y="Amount", color="Type", color_discrete_map={"Income": "green", "Expenses": "red"})
+                    st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.info("No expenses found for this period.")
+            
+            st.divider()
+            with st.expander("Show Detailed Transaction Records"):
+                col_l, col_r = st.columns(2)
+                with col_l:
+                    st.subheader("Expenses List")
+                    for idx, row in f_exp.iterrows():
+                        st.text(f"{row['Date'].date()} | {row['Description']} | RM{row['Amount']}")
+                        if st.button("🗑 Delete", key=f"del_e_{idx}"):
+                            delete_row(sh, 'Expenses', idx)
+                            st.session_state['success_msg'] = "❌ Deleted!"
+                            st.rerun()
+                with col_r:
+                    st.subheader("Income List")
+                    for idx, row in f_inc.iterrows():
+                        st.text(f"{row['Date'].date()} | {row['Source']} | RM{row['Amount']}")
+                        if st.button("🗑 Delete", key=f"del_i_{idx}"):
+                            delete_row(sh, 'Income', idx)
+                            st.session_state['success_msg'] = "❌ Deleted!"
+                            st.rerun()
         else:
-            years = all_dates.dt.year.unique()
-            selected_year = st.selectbox("Select Year", sorted(years, reverse=True))
-            mask_inc = f_inc['Date'].dt.year == selected_year
-            mask_exp = f_exp['Date'].dt.year == selected_year
-            f_inc, f_exp = f_inc[mask_inc], f_exp[mask_exp]
-
-        tot_inc = f_inc['Amount'].sum()
-        tot_exp = f_exp['Amount'].sum()
-        balance = tot_inc - tot_exp
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Income", f"RM {tot_inc:,.2f}")
-        c2.metric("Total Expenses", f"RM {tot_exp:,.2f}")
-        c3.metric("Balance", f"RM {balance:,.2f}")
-        st.divider()
-
-        if not f_exp.empty:
-            col_chart1, col_chart2 = st.columns(2)
-            with col_chart1:
-                st.subheader("Spending by Category")
-                pie_data = f_exp.groupby("Category")["Amount"].sum().reset_index()
-                fig_pie = px.pie(pie_data, values='Amount', names='Category', hole=0.4)
-                st.plotly_chart(fig_pie, use_container_width=True)
-            with col_chart2:
-                st.subheader("Income vs Expenses")
-                bar_data = pd.DataFrame({"Type": ["Income", "Expenses"], "Amount": [tot_inc, tot_exp]})
-                fig_bar = px.bar(bar_data, x="Type", y="Amount", color="Type", color_discrete_map={"Income": "green", "Expenses": "red"})
-                st.plotly_chart(fig_bar, use_container_width=True)
-        else:
-            st.info("No expenses found for this period.")
-        
-        st.divider()
-        with st.expander("Show Detailed Transaction Records"):
-            col_l, col_r = st.columns(2)
-            with col_l:
-                st.subheader("Expenses List")
-                for idx, row in f_exp.iterrows():
-                    st.text(f"{row['Date'].date()} | {row['Description']} | RM{row['Amount']}")
-                    if st.button("🗑 Delete", key=f"del_e_{idx}"):
-                        delete_row(sh, 'Expenses', idx)
-                        st.session_state['success_msg'] = "❌ Deleted!"
-                        st.rerun()
-            with col_r:
-                st.subheader("Income List")
-                for idx, row in f_inc.iterrows():
-                    st.text(f"{row['Date'].date()} | {row['Source']} | RM{row['Amount']}")
-                    if st.button("🗑 Delete", key=f"del_i_{idx}"):
-                        delete_row(sh, 'Income', idx)
-                        st.session_state['success_msg'] = "❌ Deleted!"
-                        st.rerun()
-    else:
-        st.info("No data found.")
+            st.info("No data found.")
