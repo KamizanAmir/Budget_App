@@ -41,6 +41,18 @@ def save_row(tab_name, data):
         ws.append_row(head)
     ws.append_row(data)
 
+def update_row(tab_name, row_idx, data):
+    sh = get_sh()
+    ws = sh.worksheet(tab_name)
+    # Google Sheets is 1-indexed. Header is row 1. Data starts at row 2.
+    # dataframe index 0 = sheet row 2.
+    sheet_row = row_idx + 2
+    
+    # Update cells (Col A, B, C, D...)
+    # We update the whole row range to be efficient
+    cell_range = f"A{sheet_row}:D{sheet_row}" if tab_name == "Expenses" else f"A{sheet_row}:C{sheet_row}"
+    ws.update(range_name=cell_range, values=[data])
+
 def delete_row(tab_name, idx):
     sh = get_sh()
     sh.worksheet(tab_name).delete_rows(idx + 2)
@@ -98,33 +110,23 @@ def scan_receipt_for_total(uploaded_file):
         st.error(f"AI Error: {e}")
         return 0.00
 
-# --- CALLBACKS (THE FIX) ---
+# --- CALLBACKS ---
 def save_income_callback():
-    # 1. Get Data from Session State
     d = str(st.session_state["inc_date"])
     s = st.session_state["inc_source"]
     a = st.session_state["inc_amount"]
-    
-    # 2. Save
     save_row('Income', [d, s, a])
     st.session_state['success_msg'] = "✅ Income Saved!"
-    
-    # 3. Clear Form (Safely)
     st.session_state["inc_source"] = ""
     st.session_state["inc_amount"] = 0.00
 
 def save_expense_callback():
-    # 1. Get Data
     d = str(st.session_state["exp_date"])
     c = st.session_state["exp_cat"]
     desc = st.session_state["exp_desc"]
     a = st.session_state["exp_amount"]
-    
-    # 2. Save
     save_row('Expenses', [d, desc, c, a])
     st.session_state['success_msg'] = "✅ Expense Saved!"
-    
-    # 3. Clear Form
     st.session_state["exp_desc"] = ""
     st.session_state["exp_amount"] = 0.00
     if 'last_file' in st.session_state: del st.session_state['last_file']
@@ -132,6 +134,39 @@ def save_expense_callback():
 def delete_callback(tab_name, idx):
     delete_row(tab_name, idx)
     st.session_state['success_msg'] = "❌ Deleted!"
+
+# --- EDIT DIALOG FUNCTION ---
+@st.dialog("Edit Transaction")
+def edit_transaction_dialog(tab_name, idx, row_data):
+    st.write(f"Editing {tab_name} (Row {idx+1})")
+    
+    # Pre-fill data
+    current_date = pd.to_datetime(row_data['Date']).date()
+    new_date = st.date_input("Date", value=current_date)
+    
+    if tab_name == "Expenses":
+        current_cat = row_data['Category']
+        cats = ["Food", "Transport", "Utilities", "Shopping", "Housing", "Other"]
+        # Ensure current category is in list, default to Other if not
+        cat_idx = cats.index(current_cat) if current_cat in cats else 5
+        
+        new_cat = st.selectbox("Category", cats, index=cat_idx)
+        new_desc = st.text_input("Description", value=row_data['Description'])
+        new_amt = st.number_input("Amount", value=float(row_data['Amount']), min_value=0.0, format="%.2f")
+        
+        if st.button("Update Expense"):
+            update_row('Expenses', idx, [str(new_date), new_desc, new_cat, new_amt])
+            st.session_state['success_msg'] = "✅ Updated!"
+            st.rerun()
+            
+    else: # Income
+        new_source = st.text_input("Source", value=row_data['Source'])
+        new_amt = st.number_input("Amount", value=float(row_data['Amount']), min_value=0.0, format="%.2f")
+        
+        if st.button("Update Income"):
+            update_row('Income', idx, [str(new_date), new_source, new_amt])
+            st.session_state['success_msg'] = "✅ Updated!"
+            st.rerun()
 
 # --- SESSION STATE ---
 if 'user_sheet_name' not in st.session_state: st.session_state['user_sheet_name'] = None
@@ -175,7 +210,6 @@ else:
     #  SCENE 2: MAIN APP
     # ==========================================
     try:
-        # Just check connection
         get_sh()
     except gspread.exceptions.SpreadsheetNotFound:
         st.warning("Account Pending Activation.")
@@ -246,8 +280,6 @@ else:
             st.date_input("Date", datetime.date.today(), key="inc_date")
             st.text_input("Source", key="inc_source")
             st.number_input("Amount", min_value=0.0, format="%.2f", key="inc_amount")
-            
-            # CALLBACK IS ATTACHED HERE
             st.form_submit_button("Save Income", on_click=save_income_callback)
 
     # --- VIEW 2: EXPENSE ---
@@ -273,8 +305,6 @@ else:
             st.selectbox("Category", ["Food", "Transport", "Utilities", "Shopping", "Housing", "Other"], key="exp_cat")
             st.text_input("Description", key="exp_desc")
             st.number_input("Amount", min_value=0.0, format="%.2f", key="exp_amount")
-            
-            # CALLBACK IS ATTACHED HERE
             st.form_submit_button("Save Expense", on_click=save_expense_callback)
 
     # --- VIEW 3: ANALYTICS ---
@@ -337,25 +367,39 @@ else:
                 l, r = st.columns(2)
                 with l:
                     st.subheader("Expenses")
-                    col1, col2, col3, col4 = st.columns([2,3,2,1])
+                    # Added 5 columns for layout
+                    col1, col2, col3, col4, col5 = st.columns([2,3,2,1,1])
                     col1.markdown("**Date**"); col2.markdown("**Desc**"); col3.markdown("**Amt**");
                     for idx, row in f_e.iterrows():
-                        c1, c2, c3, c4 = st.columns([2,3,2,1])
+                        c1, c2, c3, c4, c5 = st.columns([2,3,2,1,1])
                         c1.write(row['Date'].strftime('%Y-%m-%d'))
                         c2.write(f"{row['Category']} - {row['Description']}")
                         c3.write(f"RM{row['Amount']}")
-                        if c4.button("🗑", key=f"de{idx}", on_click=delete_callback, args=('Expenses', idx)):
+                        
+                        # EDIT BUTTON
+                        if c4.button("✏️", key=f"edit_e_{idx}"):
+                            edit_transaction_dialog("Expenses", idx, row)
+                        
+                        # DELETE BUTTON
+                        if c5.button("🗑", key=f"de{idx}", on_click=delete_callback, args=('Expenses', idx)):
                             pass
+                            
                 with r:
                     st.subheader("Income")
-                    col1, col2, col3, col4 = st.columns([2,3,2,1])
+                    col1, col2, col3, col4, col5 = st.columns([2,3,2,1,1])
                     col1.markdown("**Date**"); col2.markdown("**Src**"); col3.markdown("**Amt**");
                     for idx, row in f_i.iterrows():
-                        c1, c2, c3, c4 = st.columns([2,3,2,1])
+                        c1, c2, c3, c4, c5 = st.columns([2,3,2,1,1])
                         c1.write(row['Date'].strftime('%Y-%m-%d'))
                         c2.write(row['Source'])
                         c3.write(f"RM{row['Amount']}")
-                        if c4.button("🗑", key=f"di{idx}", on_click=delete_callback, args=('Income', idx)):
+                        
+                        # EDIT BUTTON
+                        if c4.button("✏️", key=f"edit_i_{idx}"):
+                            edit_transaction_dialog("Income", idx, row)
+                            
+                        # DELETE BUTTON
+                        if c5.button("🗑", key=f"di{idx}", on_click=delete_callback, args=('Income', idx)):
                             pass
         else:
             st.info("No data found.")
