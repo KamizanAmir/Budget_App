@@ -75,9 +75,7 @@ def scan_receipt_for_total(uploaded_file):
 # --- SESSION STATE ---
 if 'user_sheet_name' not in st.session_state: st.session_state['user_sheet_name'] = None
 if 'username' not in st.session_state: st.session_state['username'] = None
-# FIX: 'current_view' controls the sticky navigation
 if 'current_view' not in st.session_state: st.session_state['current_view'] = "📥 Add Income"
-if 'scanned_amount' not in st.session_state: st.session_state['scanned_amount'] = 0.00
 
 # ==========================================
 #  SCENE 1: LOGIN
@@ -166,8 +164,7 @@ else:
 
     st.title(f"💰 {st.session_state['username'].capitalize()}'s Budget")
 
-    # --- NAVIGATION (Fixed: Using Radio instead of Tabs for stickiness) ---
-    # We use 'key' to automatically bind this to session state
+    # --- NAVIGATION ---
     nav_options = ["📥 Add Income", "💸 Add Expense", "📊 Analytics"]
     selection = st.radio("", nav_options, horizontal=True, key="current_view")
     
@@ -183,8 +180,6 @@ else:
             if st.form_submit_button("Save Income"):
                 save_row(sh, 'Income', [str(d), s, a])
                 st.session_state['success_msg'] = "✅ Income Saved!"
-                # Force stay on Income
-                st.session_state['current_view'] = "📥 Add Income"
                 st.rerun()
 
     # --- VIEW 2: EXPENSE ---
@@ -197,12 +192,13 @@ else:
             st.caption("🤖 Optional: Upload receipt to auto-detect total.")
             uploaded_file = st.file_uploader("Upload Receipt", type=['png', 'jpg', 'jpeg'])
             if uploaded_file:
-                # Check if new file
+                # Check if new file to avoid re-scanning on every interaction
                 if 'last_file' not in st.session_state or st.session_state['last_file'] != uploaded_file.name:
                     with st.spinner("Scanning..."):
                         val = scan_receipt_for_total(uploaded_file)
                         if val > 0:
-                            st.session_state['scanned_amount'] = val
+                            # Update the Widget State directly
+                            st.session_state['expense_amount_input'] = val 
                             st.toast(f"Detected: RM{val}", icon="🤖")
                         else:
                             st.toast("No clear price found.", icon="⚠️")
@@ -213,16 +209,16 @@ else:
             c = st.selectbox("Category", ["Food", "Transport", "Utilities", "Shopping", "Housing", "Other"])
             desc = st.text_input("Description")
             
-            # Pre-fill amount from AI
-            val = st.session_state.get('scanned_amount', 0.00)
-            a = st.number_input("Amount", min_value=0.0, format="%.2f", value=val)
+            # BUG FIX: Removed 'value=' argument. 
+            # We use 'key' to let Streamlit manage the state, and we manually update that key ONLY when AI runs.
+            a = st.number_input("Amount", min_value=0.0, format="%.2f", key="expense_amount_input")
             
             if st.form_submit_button("Save Expense"):
                 save_row(sh, 'Expenses', [str(d), desc, c, a])
                 st.session_state['success_msg'] = "✅ Expense Saved!"
-                # Force stay on Expense
-                st.session_state['current_view'] = "💸 Add Expense"
-                st.session_state['scanned_amount'] = 0.00 # Reset
+                
+                # Clear the amount for the next entry
+                st.session_state['expense_amount_input'] = 0.00
                 if 'last_file' in st.session_state: del st.session_state['last_file']
                 st.rerun()
 
@@ -301,7 +297,7 @@ else:
                         if c4.button("🗑", key=f"de{idx}"):
                             delete_row(sh, 'Expenses', idx)
                             st.session_state['success_msg'] = "Deleted!"
-                            st.session_state['current_view'] = "📊 Analytics"
+                            # Removed line that caused crash: st.session_state['current_view'] = ...
                             st.rerun()
                 with r:
                     st.subheader("Income")
@@ -315,7 +311,7 @@ else:
                         if c4.button("🗑", key=f"di{idx}"):
                             delete_row(sh, 'Income', idx)
                             st.session_state['success_msg'] = "Deleted!"
-                            st.session_state['current_view'] = "📊 Analytics"
+                            # Removed line that caused crash: st.session_state['current_view'] = ...
                             st.rerun()
         else:
             st.info("No data found.")
