@@ -209,16 +209,15 @@ else:
             c = st.selectbox("Category", ["Food", "Transport", "Utilities", "Shopping", "Housing", "Other"])
             desc = st.text_input("Description")
             
-            # BUG FIX: Removed 'value=' argument. 
-            # We use 'key' to let Streamlit manage the state, and we manually update that key ONLY when AI runs.
+            # Key is used to set the value programmatically from AI
             a = st.number_input("Amount", min_value=0.0, format="%.2f", key="expense_amount_input")
             
             if st.form_submit_button("Save Expense"):
                 save_row(sh, 'Expenses', [str(d), desc, c, a])
                 st.session_state['success_msg'] = "✅ Expense Saved!"
                 
-                # Clear the amount for the next entry
-                st.session_state['expense_amount_input'] = 0.00
+                # CRITICAL FIX: Removed the manual reset line. 
+                # 'clear_on_submit=True' handles this automatically.
                 if 'last_file' in st.session_state: del st.session_state['last_file']
                 st.rerun()
 
@@ -297,7 +296,6 @@ else:
                         if c4.button("🗑", key=f"de{idx}"):
                             delete_row(sh, 'Expenses', idx)
                             st.session_state['success_msg'] = "Deleted!"
-                            # Removed line that caused crash: st.session_state['current_view'] = ...
                             st.rerun()
                 with r:
                     st.subheader("Income")
@@ -311,7 +309,6 @@ else:
                         if c4.button("🗑", key=f"di{idx}"):
                             delete_row(sh, 'Income', idx)
                             st.session_state['success_msg'] = "Deleted!"
-                            # Removed line that caused crash: st.session_state['current_view'] = ...
                             st.rerun()
         else:
             st.info("No data found.")
