@@ -53,6 +53,16 @@ def register_user_request(username, password, preferred_sheet_name):
     except Exception as e:
         return False, f"Database Error: {e}"
 
+def change_user_password(username, new_password):
+    client = get_client()
+    try:
+        user_sheet = client.open("Budget_App_Users").sheet1
+        cell = user_sheet.find(username)
+        user_sheet.update_cell(cell.row, 2, new_password)
+        return True
+    except:
+        return False
+
 # --- AI SCANNER ---
 def scan_receipt_for_total(uploaded_file):
     if not OCR_AVAILABLE or uploaded_file is None: return 0.00
@@ -61,7 +71,6 @@ def scan_receipt_for_total(uploaded_file):
         img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
         result_text = ocr_reader.readtext(img, detail=0)
         full_text = " ".join(result_text)
-        # Regex to find numbers that look like prices
         matches = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2}))", full_text)
         max_price = 0.0
         for match in matches:
@@ -126,8 +135,34 @@ else:
         st.error(f"Connection Error: {e}")
         st.stop()
 
+    # --- SIDEBAR (With Change Password) ---
     with st.sidebar:
         st.write(f"User: **{st.session_state['username']}**")
+        
+        # RESTORED: Change Password Section
+        with st.expander("⚙️ Change Password"):
+            with st.form("pwd_change_form"):
+                curr_pass = st.text_input("Current Password", type="password")
+                new_pass = st.text_input("New Password", type="password")
+                conf_pass = st.text_input("Confirm Password", type="password")
+                
+                if st.form_submit_button("Update"):
+                    # Verify old password first
+                    real_sheet_check = check_login(st.session_state['username'], curr_pass)
+                    if real_sheet_check:
+                        if new_pass == conf_pass and new_pass != "":
+                            if change_user_password(st.session_state['username'], new_pass):
+                                st.success("Updated! Logging out...")
+                                st.session_state['user_sheet_name'] = None
+                                st.rerun()
+                            else:
+                                st.error("Database Error.")
+                        else:
+                            st.error("Passwords do not match.")
+                    else:
+                        st.error("Current password incorrect.")
+
+        st.divider()
         if st.button("Logout"):
             st.session_state['user_sheet_name'] = None
             st.rerun()
@@ -173,51 +208,52 @@ else:
     # --- VIEW 1: INCOME ---
     if selection == "📥 Add Income":
         st.header("New Income")
-        with st.form("income_form", clear_on_submit=True):
-            d = st.date_input("Date", datetime.date.today())
-            s = st.text_input("Source")
-            a = st.number_input("Amount", min_value=0.0, format="%.2f")
+        with st.form("income_form", clear_on_submit=False):
+            d = st.date_input("Date", datetime.date.today(), key="inc_date")
+            s = st.text_input("Source", key="inc_source")
+            a = st.number_input("Amount", min_value=0.0, format="%.2f", key="inc_amount")
+            
             if st.form_submit_button("Save Income"):
                 save_row(sh, 'Income', [str(d), s, a])
                 st.session_state['success_msg'] = "✅ Income Saved!"
+                
+                # MANUAL CLEAR
+                st.session_state["inc_source"] = ""
+                st.session_state["inc_amount"] = 0.00
                 st.rerun()
 
     # --- VIEW 2: EXPENSE ---
     elif selection == "💸 Add Expense":
         st.header("New Expense")
         
-        if not OCR_AVAILABLE:
-            st.caption("⚠️ AI Scanner unavailable (libraries missing). Manual entry only.")
-        else:
+        if OCR_AVAILABLE:
             st.caption("🤖 Optional: Upload receipt to auto-detect total.")
             uploaded_file = st.file_uploader("Upload Receipt", type=['png', 'jpg', 'jpeg'])
             if uploaded_file:
-                # Check if new file to avoid re-scanning on every interaction
                 if 'last_file' not in st.session_state or st.session_state['last_file'] != uploaded_file.name:
                     with st.spinner("Scanning..."):
                         val = scan_receipt_for_total(uploaded_file)
                         if val > 0:
-                            # Update the Widget State directly
-                            st.session_state['expense_amount_input'] = val 
+                            st.session_state['exp_amount'] = val
                             st.toast(f"Detected: RM{val}", icon="🤖")
                         else:
                             st.toast("No clear price found.", icon="⚠️")
                     st.session_state['last_file'] = uploaded_file.name
 
-        with st.form("expense_form", clear_on_submit=True):
-            d = st.date_input("Date", datetime.date.today())
-            c = st.selectbox("Category", ["Food", "Transport", "Utilities", "Shopping", "Housing", "Other"])
-            desc = st.text_input("Description")
-            
-            # Key is used to set the value programmatically from AI
-            a = st.number_input("Amount", min_value=0.0, format="%.2f", key="expense_amount_input")
+        with st.form("expense_form", clear_on_submit=False):
+            d = st.date_input("Date", datetime.date.today(), key="exp_date")
+            c = st.selectbox("Category", ["Food", "Transport", "Utilities", "Shopping", "Housing", "Other"], key="exp_cat")
+            desc = st.text_input("Description", key="exp_desc")
+            a = st.number_input("Amount", min_value=0.0, format="%.2f", key="exp_amount")
             
             if st.form_submit_button("Save Expense"):
                 save_row(sh, 'Expenses', [str(d), desc, c, a])
                 st.session_state['success_msg'] = "✅ Expense Saved!"
                 
-                # CRITICAL FIX: Removed the manual reset line. 
-                # 'clear_on_submit=True' handles this automatically.
+                # MANUAL CLEAR
+                st.session_state["exp_desc"] = ""
+                st.session_state["exp_amount"] = 0.00
+                
                 if 'last_file' in st.session_state: del st.session_state['last_file']
                 st.rerun()
 
@@ -241,11 +277,9 @@ else:
                 f_i = f_i[f_i['Date'].dt.year == sel_y]
                 f_e = f_e[f_e['Date'].dt.year == sel_y]
             
-            # Sort
             f_i = f_i.sort_values("Date", ascending=False)
             f_e = f_e.sort_values("Date", ascending=False)
 
-            # Metrics
             ti, te = f_i['Amount'].sum(), f_e['Amount'].sum()
             c1, c2, c3 = st.columns(3)
             c1.metric("Income", f"RM {ti:,.2f}")
@@ -254,7 +288,6 @@ else:
             
             st.divider()
 
-            # Charts
             if not f_e.empty:
                 cl, cr = st.columns(2)
                 with cl:
@@ -270,9 +303,7 @@ else:
             
             st.divider()
 
-            # Detailed Records & Export
             with st.expander("Detailed Records", expanded=True):
-                # Excel Export
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     f_e.to_excel(writer, sheet_name='Expenses', index=False)
