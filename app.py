@@ -12,7 +12,6 @@ import re
 try:
     import easyocr
     import cv2
-    # Initialize reader once (cpu mode for free cloud)
     ocr_reader = easyocr.Reader(['en'], gpu=False) 
     OCR_AVAILABLE = True
 except ImportError:
@@ -27,6 +26,24 @@ def get_client():
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
+
+# --- GOOGLE SHEET FUNCTIONS ---
+def get_sh():
+    client = get_client()
+    return client.open(st.session_state['user_sheet_name'])
+
+def save_row(tab_name, data):
+    sh = get_sh()
+    try: ws = sh.worksheet(tab_name)
+    except:
+        ws = sh.add_worksheet(title=tab_name, rows="1000", cols="10")
+        head = ["Date", "Description", "Category", "Amount"] if tab_name == "Expenses" else ["Date", "Source", "Amount"]
+        ws.append_row(head)
+    ws.append_row(data)
+
+def delete_row(tab_name, idx):
+    sh = get_sh()
+    sh.worksheet(tab_name).delete_rows(idx + 2)
 
 # --- USER MANAGEMENT ---
 def check_login(username, password):
@@ -81,6 +98,41 @@ def scan_receipt_for_total(uploaded_file):
         st.error(f"AI Error: {e}")
         return 0.00
 
+# --- CALLBACKS (THE FIX) ---
+def save_income_callback():
+    # 1. Get Data from Session State
+    d = str(st.session_state["inc_date"])
+    s = st.session_state["inc_source"]
+    a = st.session_state["inc_amount"]
+    
+    # 2. Save
+    save_row('Income', [d, s, a])
+    st.session_state['success_msg'] = "✅ Income Saved!"
+    
+    # 3. Clear Form (Safely)
+    st.session_state["inc_source"] = ""
+    st.session_state["inc_amount"] = 0.00
+
+def save_expense_callback():
+    # 1. Get Data
+    d = str(st.session_state["exp_date"])
+    c = st.session_state["exp_cat"]
+    desc = st.session_state["exp_desc"]
+    a = st.session_state["exp_amount"]
+    
+    # 2. Save
+    save_row('Expenses', [d, desc, c, a])
+    st.session_state['success_msg'] = "✅ Expense Saved!"
+    
+    # 3. Clear Form
+    st.session_state["exp_desc"] = ""
+    st.session_state["exp_amount"] = 0.00
+    if 'last_file' in st.session_state: del st.session_state['last_file']
+
+def delete_callback(tab_name, idx):
+    delete_row(tab_name, idx)
+    st.session_state['success_msg'] = "❌ Deleted!"
+
 # --- SESSION STATE ---
 if 'user_sheet_name' not in st.session_state: st.session_state['user_sheet_name'] = None
 if 'username' not in st.session_state: st.session_state['username'] = None
@@ -123,8 +175,8 @@ else:
     #  SCENE 2: MAIN APP
     # ==========================================
     try:
-        client = get_client()
-        sh = client.open(st.session_state['user_sheet_name']) 
+        # Just check connection
+        get_sh()
     except gspread.exceptions.SpreadsheetNotFound:
         st.warning("Account Pending Activation.")
         if st.button("Logout"):
@@ -135,32 +187,24 @@ else:
         st.error(f"Connection Error: {e}")
         st.stop()
 
-    # --- SIDEBAR (With Change Password) ---
     with st.sidebar:
         st.write(f"User: **{st.session_state['username']}**")
         
-        # RESTORED: Change Password Section
         with st.expander("⚙️ Change Password"):
             with st.form("pwd_change_form"):
                 curr_pass = st.text_input("Current Password", type="password")
                 new_pass = st.text_input("New Password", type="password")
                 conf_pass = st.text_input("Confirm Password", type="password")
-                
                 if st.form_submit_button("Update"):
-                    # Verify old password first
-                    real_sheet_check = check_login(st.session_state['username'], curr_pass)
-                    if real_sheet_check:
-                        if new_pass == conf_pass and new_pass != "":
+                    if check_login(st.session_state['username'], curr_pass):
+                        if new_pass == conf_pass and new_pass:
                             if change_user_password(st.session_state['username'], new_pass):
                                 st.success("Updated! Logging out...")
                                 st.session_state['user_sheet_name'] = None
                                 st.rerun()
-                            else:
-                                st.error("Database Error.")
-                        else:
-                            st.error("Passwords do not match.")
-                    else:
-                        st.error("Current password incorrect.")
+                            else: st.error("Database Error.")
+                        else: st.error("Passwords mismatch.")
+                    else: st.error("Incorrect password.")
 
         st.divider()
         if st.button("Logout"):
@@ -168,10 +212,11 @@ else:
             st.rerun()
 
     # --- HELPERS ---
-    def load_data(sheet_obj):
-        try: df_e = pd.DataFrame(sheet_obj.worksheet("Expenses").get_all_records())
+    def load_data():
+        sh = get_sh()
+        try: df_e = pd.DataFrame(sh.worksheet("Expenses").get_all_records())
         except: df_e = pd.DataFrame()
-        try: df_i = pd.DataFrame(sheet_obj.worksheet("Income").get_all_records())
+        try: df_i = pd.DataFrame(sh.worksheet("Income").get_all_records())
         except: df_i = pd.DataFrame()
         
         if df_e.empty or 'Date' not in df_e.columns: df_e = pd.DataFrame(columns=["Date", "Description", "Category", "Amount"])
@@ -181,18 +226,8 @@ else:
         df_i['Date'] = pd.to_datetime(df_i['Date'], errors='coerce')
         return df_e, df_i
 
-    def save_row(sheet_obj, tab_name, data):
-        try: ws = sheet_obj.worksheet(tab_name)
-        except:
-            ws = sheet_obj.add_worksheet(title=tab_name, rows="1000", cols="10")
-            head = ["Date", "Description", "Category", "Amount"] if tab_name == "Expenses" else ["Date", "Source", "Amount"]
-            ws.append_row(head)
-        ws.append_row(data)
-
-    def delete_row(sheet_obj, tab_name, idx):
-        sheet_obj.worksheet(tab_name).delete_rows(idx + 2)
-
-    df_exp, df_inc = load_data(sh)
+    df_exp, df_inc = load_data()
+    
     if 'success_msg' in st.session_state:
         st.success(st.session_state['success_msg'])
         del st.session_state['success_msg']
@@ -202,25 +237,18 @@ else:
     # --- NAVIGATION ---
     nav_options = ["📥 Add Income", "💸 Add Expense", "📊 Analytics"]
     selection = st.radio("", nav_options, horizontal=True, key="current_view")
-    
     st.divider()
 
     # --- VIEW 1: INCOME ---
     if selection == "📥 Add Income":
         st.header("New Income")
         with st.form("income_form", clear_on_submit=False):
-            d = st.date_input("Date", datetime.date.today(), key="inc_date")
-            s = st.text_input("Source", key="inc_source")
-            a = st.number_input("Amount", min_value=0.0, format="%.2f", key="inc_amount")
+            st.date_input("Date", datetime.date.today(), key="inc_date")
+            st.text_input("Source", key="inc_source")
+            st.number_input("Amount", min_value=0.0, format="%.2f", key="inc_amount")
             
-            if st.form_submit_button("Save Income"):
-                save_row(sh, 'Income', [str(d), s, a])
-                st.session_state['success_msg'] = "✅ Income Saved!"
-                
-                # MANUAL CLEAR
-                st.session_state["inc_source"] = ""
-                st.session_state["inc_amount"] = 0.00
-                st.rerun()
+            # CALLBACK IS ATTACHED HERE
+            st.form_submit_button("Save Income", on_click=save_income_callback)
 
     # --- VIEW 2: EXPENSE ---
     elif selection == "💸 Add Expense":
@@ -241,21 +269,13 @@ else:
                     st.session_state['last_file'] = uploaded_file.name
 
         with st.form("expense_form", clear_on_submit=False):
-            d = st.date_input("Date", datetime.date.today(), key="exp_date")
-            c = st.selectbox("Category", ["Food", "Transport", "Utilities", "Shopping", "Housing", "Other"], key="exp_cat")
-            desc = st.text_input("Description", key="exp_desc")
-            a = st.number_input("Amount", min_value=0.0, format="%.2f", key="exp_amount")
+            st.date_input("Date", datetime.date.today(), key="exp_date")
+            st.selectbox("Category", ["Food", "Transport", "Utilities", "Shopping", "Housing", "Other"], key="exp_cat")
+            st.text_input("Description", key="exp_desc")
+            st.number_input("Amount", min_value=0.0, format="%.2f", key="exp_amount")
             
-            if st.form_submit_button("Save Expense"):
-                save_row(sh, 'Expenses', [str(d), desc, c, a])
-                st.session_state['success_msg'] = "✅ Expense Saved!"
-                
-                # MANUAL CLEAR
-                st.session_state["exp_desc"] = ""
-                st.session_state["exp_amount"] = 0.00
-                
-                if 'last_file' in st.session_state: del st.session_state['last_file']
-                st.rerun()
+            # CALLBACK IS ATTACHED HERE
+            st.form_submit_button("Save Expense", on_click=save_expense_callback)
 
     # --- VIEW 3: ANALYTICS ---
     elif selection == "📊 Analytics":
@@ -324,10 +344,8 @@ else:
                         c1.write(row['Date'].strftime('%Y-%m-%d'))
                         c2.write(f"{row['Category']} - {row['Description']}")
                         c3.write(f"RM{row['Amount']}")
-                        if c4.button("🗑", key=f"de{idx}"):
-                            delete_row(sh, 'Expenses', idx)
-                            st.session_state['success_msg'] = "Deleted!"
-                            st.rerun()
+                        if c4.button("🗑", key=f"de{idx}", on_click=delete_callback, args=('Expenses', idx)):
+                            pass
                 with r:
                     st.subheader("Income")
                     col1, col2, col3, col4 = st.columns([2,3,2,1])
@@ -337,9 +355,7 @@ else:
                         c1.write(row['Date'].strftime('%Y-%m-%d'))
                         c2.write(row['Source'])
                         c3.write(f"RM{row['Amount']}")
-                        if c4.button("🗑", key=f"di{idx}"):
-                            delete_row(sh, 'Income', idx)
-                            st.session_state['success_msg'] = "Deleted!"
-                            st.rerun()
+                        if c4.button("🗑", key=f"di{idx}", on_click=delete_callback, args=('Income', idx)):
+                            pass
         else:
             st.info("No data found.")
